@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=77.0.3"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "local-native-team"
+version = "0.1.0"
+description = "Persistent work coordination for native Codex, agy and Claude Code conversations"
+license = "MIT"
+license-files = ["LICENSE"]
+requires-python = ">=3.12"
+dependencies = ["mcp==1.30.0", "pydantic>=2.11,<3", "websockets==15.0.1"]
+
+[project.scripts]
+native-team = "native_team.cli:main"
+
+[tool.setuptools]
+packages = ["native_team", "native_team.web_assets"]
+include-package-data = false
+
+[tool.setuptools.package-dir]
+native_team = "src/native_team"
+"native_team.web_assets" = "web/prototype"
+
+[tool.setuptools.package-data]
+"native_team.web_assets" = ["index.html", "data-source.js", "app.js", "workflow.js", "styles.css", "mark.svg"]

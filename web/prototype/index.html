@@ -1,0 +1,69 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <meta name="description" content="Native Team 本地只读团队工作台。">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; base-uri 'none'; form-action 'none'">
+  <title>Native Team · 团队工作台</title>
+  <link rel="icon" href="./mark.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="./styles.css">
+  <script src="./config.js" defer></script>
+  <script src="./data-source.js" defer></script>
+  <script src="./workflow.js" defer></script>
+  <script src="./app.js" defer></script>
+</head>
+<body>
+  <a class="skip-link" href="#workspace">跳到团队工作区</a>
+  <div class="prototype-bar">
+    <p id="data-status" role="status"><span class="prototype-label">团队工作台</span> 正在读取…</p>
+    <div class="refresh-controls"><label id="refresh-interval-label" for="refresh-interval" hidden>刷新
+      <select id="refresh-interval"><option value="0">手动</option><option value="10">每 10 秒</option><option value="30">每 30 秒</option></select>
+    </label><button id="refresh-button" class="outline-button" type="button" hidden>刷新记录</button><span id="refresh-hint" class="refresh-hint"></span></div>
+    <label class="scenario-label" for="scenario">预览场景
+      <select id="scenario">
+        <option value="normal">正常协作</option>
+        <option value="empty">暂无共享记录</option>
+        <option value="error">读取失败</option>
+      </select>
+    </label>
+  </div>
+  <div class="app-shell">
+    <aside class="sidebar" aria-label="团队导航">
+      <div class="brand"><img src="./mark.svg" width="34" height="34" alt=""><div><strong>Native Team</strong><span>团队工作台</span></div></div>
+      <label class="search-box" for="team-search"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6.5"/><path d="m16 16 4.5 4.5"/></svg><input id="team-search" type="search" placeholder="查找团队或项目" autocomplete="off"></label>
+      <div class="directory-caption"><span>所有项目</span><span id="team-count"></span></div>
+      <nav id="team-list" aria-label="选择团队"></nav>
+      <p id="search-status" class="sr-only" aria-live="polite"></p>
+      <div class="sidebar-footer"><span class="local-icon" aria-hidden="true">⌘</span><div><strong id="sidebar-mode">本地只读工作台</strong><span>浏览不会唤醒任何 session</span></div></div>
+    </aside>
+    <main id="workspace" tabindex="-1">
+      <header class="workspace-toolbar"><div class="breadcrumb">团队工作区 <span>/</span> <span id="breadcrumb-name"></span></div><div class="toolbar-actions"><button id="theme-button" class="quiet-button" type="button" aria-pressed="false">深色外观</button><button id="about-button" class="quiet-button" type="button">关于工作台</button></div></header>
+      <div class="workspace-body">
+        <section id="team-header" class="team-header" aria-labelledby="team-title"></section>
+        <div class="tab-bar" role="tablist" aria-label="团队视图">
+          <button id="tab-overview" type="button" role="tab" data-tab="overview" aria-controls="panel-overview">工作进展</button>
+          <button id="tab-tasks" type="button" role="tab" data-tab="tasks" aria-controls="panel-tasks">任务与评审 <span id="task-count" class="tab-count"></span></button>
+          <button id="tab-activity" type="button" role="tab" data-tab="activity" aria-controls="panel-activity">协作动态</button>
+          <button id="tab-workflow" type="button" role="tab" data-tab="workflow" aria-controls="panel-workflow">协作图</button>
+          <button id="tab-quota" type="button" role="tab" data-tab="quota" aria-controls="panel-quota">账户与额度</button>
+          <button id="tab-memory" type="button" role="tab" data-tab="memory" aria-controls="panel-memory">团队记忆</button>
+        </div>
+        <section id="panel-overview" class="tab-panel" role="tabpanel" aria-labelledby="tab-overview" tabindex="0"></section>
+        <section id="panel-tasks" class="tab-panel" role="tabpanel" aria-labelledby="tab-tasks" tabindex="0" hidden></section>
+        <section id="panel-activity" class="tab-panel" role="tabpanel" aria-labelledby="tab-activity" tabindex="0" hidden></section>
+        <section id="panel-workflow" class="tab-panel" role="tabpanel" aria-labelledby="tab-workflow" tabindex="0" hidden></section>
+        <section id="panel-quota" class="tab-panel" role="tabpanel" aria-labelledby="tab-quota" tabindex="0" hidden></section>
+        <section id="panel-memory" class="tab-panel" role="tabpanel" aria-labelledby="tab-memory" tabindex="0" hidden></section>
+        <footer class="workspace-footer"><span id="snapshot-time"></span><span>成员登记不等于在线；任务状态以报告为准。</span></footer>
+      </div>
+    </main>
+  </div>
+  <dialog id="detail-dialog" class="detail-drawer" aria-labelledby="detail-title">
+    <div class="drawer-toolbar"><span id="detail-kind"></span><button id="close-detail" class="icon-button" type="button" aria-label="关闭详情"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18"/></svg></button></div>
+    <div id="detail-content" class="drawer-content"></div>
+  </dialog>
+  <noscript><p class="noscript">此原型需要 JavaScript 才能切换团队和查看详情。所有资源均保存在本机。</p></noscript>
+</body>
+</html>
