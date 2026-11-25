@@ -5,6 +5,116 @@ from test_peers import PeerFixture
 
 
 class PeerTaskTests(PeerFixture):
+    def test_manifest_baseline_distinguishes_selected_files(self):
+        import subprocess
+        from native_team.change_manifest import build
+
+        root = self.root / "source"
+        root.mkdir()
+
+        def git(*args):
+            subprocess.run(
+                ["git", "-C", str(root), *args], capture_output=True, check=True
+            )
+
+        git("init")
+        for name in ("stable", "remove", "change"):
+            (root / name).write_bytes(b"old")
+        git("add", "--", ".")
+        git(
+            "-c",
+            "user.name=Test",
+            "-c",
+            "user.email=test@example.invalid",
+            "-c",
+            "commit.gpgsign=false",
+            "commit",
+            "-m",
+            "base",
+        )
+        (root / "remove").unlink()
+        (root / "change").write_text("new")
+        (root / "new").write_text("added")
+        from unittest.mock import patch
+
+        for error in (
+            FileNotFoundError("git unavailable"),
+            subprocess.TimeoutExpired("git", 10),
+        ):
+            with (
+                patch("native_team.change_manifest.subprocess.run", side_effect=error),
+                self.assertRaisesRegex(TeamError, "Git base"),
+            ):
+                build(root, ["stable"], "HEAD")
+        result = build(root, ["stable", "change", "remove", "new"], "HEAD")
+        self.assertEqual(
+            [(f["path"], f["status"]) for f in result["files"]],
+            [("change", "modified"), ("remove", "deleted"), ("new", "added")],
+        )
+
+    def test_manifest_tracks_latest_report_and_rejects_unscoped_changes(self):
+        from native_team.change_manifest import build, validate
+        from native_team.workbench_data import team_detail
+
+        team = self.team["id"]
+        owner, reviewer = self.members["code2"], self.members["agy2"]
+        self.peers.update_member(owner, team, "code2", 1, paths=["src"])
+        self.sync("agy1")
+        self.tasks.create(
+            self.members["agy1"],
+            team,
+            "code2",
+            "agy2",
+            "Review",
+            "Verify",
+            "manifest",
+            ["src"],
+        )
+        self.sync("code2")
+        first = self.tasks.take(owner, team)
+        source = self.root / "src" / "image.bin"
+        source.parent.mkdir()
+        source.write_bytes(bytes([0, 1, 2]))
+        link = self.root / "linked-src"
+        try:
+            link.symlink_to(source.parent, target_is_directory=True)
+        except OSError:
+            pass
+        else:
+            with self.assertRaises(TeamError):
+                build(self.root, ["linked-src/image.bin"])
+        manifest = build(self.root, ["src/image.bin"])
+        self.assertEqual(manifest["files"][0]["status"], "binary")
+        for bad in [
+            {"files": [manifest["files"][0]] * 65},
+            {"files": [{**manifest["files"][0], "path": "../outside"}]},
+            {"files": [{**manifest["files"][0], "path": "sibling/x"}]},
+            {"files": [{**manifest["files"][0], "fingerprint": "contents"}]},
+        ]:
+            with self.assertRaises(TeamError):
+                self.tasks.report(
+                    owner, first["id"], first["revision"], "Done", "Check", changes=bad
+                )
+        with self.assertRaises(TeamError):
+            validate(manifest, [])
+        submitted = self.tasks.report(
+            owner, first["id"], first["revision"], "Done", "Check", changes=manifest
+        )
+        detail = team_detail(self.store.state, team)["tasks"]["items"][0]
+        self.assertEqual(
+            detail["changes"], {**manifest, "revision": submitted["revision"]}
+        )
+        self.sync("agy2")
+        self.tasks.review(
+            reviewer, first["id"], submitted["revision"], "revise", "Update"
+        )
+        self.sync("code2")
+        again = self.tasks.take(owner, team)
+        self.tasks.report(
+            owner, first["id"], again["revision"], "Revised", "Second round"
+        )
+        self.assertIsNone(self.tasks.get(owner, first["id"])["task"]["changes"])
+
     def test_stranded_writer_requires_explicit_recovery_and_old_result_is_fenced(self):
         task = self.tasks.create(
             self.members["agy1"],

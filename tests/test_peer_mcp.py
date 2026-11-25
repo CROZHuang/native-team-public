@@ -224,6 +224,12 @@ class FlatNativeToolsTests(unittest.IsolatedAsyncioTestCase):
                     revision=claim["revision"],
                     result="Fixture answer",
                     evidence="Fixture source",
+                    changes={"files": []},
+                )
+                record = await call("agy2", "peer_task_get", task_id=first["id"])
+                self.assertEqual(
+                    record["task"]["changes"],
+                    {"revision": report["revision"], "files": []},
                 )
                 invalid = await peers["agy1"].call_tool(
                     "peer_task_review",

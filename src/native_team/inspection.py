@@ -4,6 +4,7 @@ from contextlib import closing, contextmanager
 from pathlib import Path
 import sqlite3
 
+from .checkouts import project_path
 from .schema import available
 from .store import TeamError
 
@@ -28,7 +29,7 @@ def readonly_snapshot(state):
 
 
 def list_teams(state, project=None):
-    project = str(Path(project).expanduser().resolve()) if project is not None else None
+    project = str(project_path(state, project)) if project is not None else None
     with readonly_snapshot(state) as db:
         if db is None:
             return []

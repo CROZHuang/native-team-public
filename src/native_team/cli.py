@@ -4,6 +4,7 @@ from pathlib import Path
 import sys
 import time
 
+from .checkouts import project_path
 from .store import CLIENT_PROVIDERS, Store, TeamError
 
 
@@ -132,9 +133,23 @@ def main():
     ui.add_argument(
         "--no-open", action="store_true", help="Print the URL without opening a browser"
     )
+    manifest = commands.add_parser(
+        "task-manifest", help="Fingerprint individual files for a task report"
+    )
+    manifest.add_argument("--project", type=Path, required=True)
+    manifest.add_argument("--paths", nargs="+", required=True)
+    manifest.add_argument("--base")
     args = parser.parse_args()
     try:
-        if args.command == "claude-quota-stream":
+        if args.command == "task-manifest":
+            from .change_manifest import build
+
+            print(
+                json.dumps(
+                    build(args.project, args.paths, args.base), ensure_ascii=False
+                )
+            )
+        elif args.command == "claude-quota-stream":
             from .claude_quota import forward_statusline
 
             forward_statusline(sys.stdin.buffer, sys.stdout.buffer, args.state)
@@ -335,7 +350,7 @@ def main():
                 parser.error(
                     "--reason/--resume-after/--observations-json require --set"
                 )
-            project = str(args.project.expanduser().resolve())
+            project = str(project_path(args.state, args.project))
             with readonly_snapshot(args.state) as db:
                 member = (
                     db.execute(
@@ -405,7 +420,7 @@ def main():
                 print(json.dumps(report, ensure_ascii=False, indent=2))
                 return
             scope = (
-                str(args.project.expanduser().resolve())
+                str(project_path(args.state, args.project))
                 if args.project
                 else "All projects"
             )
@@ -472,6 +487,18 @@ def main():
                     print(
                         f"    {member['alias']} [{member['provider']}, {member['state']}]: {member['lane'] or 'workstream not set'}"
                     )
+                    if member.get("checkout") and (
+                        member.get("branch")
+                        or member["checkout"] != report["project"]
+                        or member.get("merge_warnings")
+                    ):
+                        print(
+                            f"      Checkout: {member.get('checkout', '')} {member.get('branch', '')}"
+                        )
+                    for warning in member.get("merge_warnings", []):
+                        print(
+                            f"      Merge review: {warning['alias']} · {', '.join(warning['paths'])}"
+                        )
                     from .availability import (
                         describe_availability,
                         describe_observations,

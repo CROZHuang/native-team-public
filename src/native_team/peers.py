@@ -6,6 +6,7 @@ import sys
 import time
 import unicodedata
 
+from . import checkouts
 from .schema import available, has_availability
 from .store import TeamError, checked, new_id
 from .availability import conserve_guidance, member_progress, read_availability
@@ -83,7 +84,7 @@ class PeerStore:
             return result
 
     def inspect(self, project):
-        project = str(Path(project).expanduser().resolve())
+        project = str(checkouts.project_path(self.store.state, project))
         with self.store.transaction() as db:
             if not available(db):
                 return []
@@ -96,12 +97,21 @@ class PeerStore:
                 team["members"] = [
                     dict(r)
                     for r in db.execute(
-                        "SELECT n.id AS member_id,n.alias,n.provider,m.lane,m.state FROM peer_members m JOIN members n ON n.id=m.member_id WHERE m.team_id=? ORDER BY n.alias",
+                        "SELECT n.id AS member_id,n.alias,n.provider,m.lane,m.state,m.paths FROM peer_members m JOIN members n ON n.id=m.member_id WHERE m.team_id=? ORDER BY n.alias",
                         (row["id"],),
                     )
                 ]
                 for member in team["members"]:
                     actor = member.pop("member_id")
+                    member.update(
+                        checkouts.member_view(
+                            db,
+                            project,
+                            actor,
+                            json.loads(member.pop("paths")),
+                            team_id=team["id"],
+                        )
+                    )
                     if team["state"] not in {"done", "cancelled"}:
                         member.update(member_progress(db, team["id"], actor))
                 team["tasks"] = {
@@ -405,7 +415,12 @@ class PeerStore:
                 raise TeamError("Stale membership revision; inspect current state")
             new_state = state or old["state"]
             new_paths = (
-                self.paths(team["project"], paths)
+                self.paths(
+                    checkouts.location(db, target["id"]).get(
+                        "checkout", team["project"]
+                    ),
+                    paths,
+                )
                 if paths is not None
                 else json.loads(old["paths"])
             )
@@ -415,32 +430,20 @@ class PeerStore:
                 and new_state == old["state"]
                 and new_paths == json.loads(old["paths"])
             ):
-                return dict(old)
+                return {
+                    **dict(old),
+                    **checkouts.member_view(
+                        db, team["project"], target["id"], new_paths, team_id=team["id"]
+                    ),
+                }
             if new_state == "active":
-                for held in db.execute(
-                    "SELECT task.paths FROM peer_tasks task JOIN peer_teams t ON t.id=task.team_id WHERE t.project=? AND task.owner!=? AND task.state='working'",
-                    (team["project"], target["id"]),
-                ):
-                    if any(
-                        overlaps(a, b)
-                        for a in new_paths
-                        for b in json.loads(held["paths"])
-                    ):
-                        raise TeamError(
-                            "An in-flight executor still holds that write scope, even if inactive"
-                        )
-                for other in db.execute(
-                    "SELECT m.paths FROM peer_members m JOIN peer_teams t ON t.id=m.team_id WHERE t.project=? AND t.state='active' AND m.member_id!=? AND m.state='active'",
-                    (team["project"], target["id"]),
-                ):
-                    if any(
-                        overlaps(a, b)
-                        for a in new_paths
-                        for b in json.loads(other["paths"])
-                    ):
-                        raise TeamError(
-                            "Write scopes overlap an active peer; arrange an explicit handoff first"
-                        )
+                collisions = checkouts.conflicts(
+                    db, team["project"], target["id"], new_paths, team_id=team["id"]
+                )
+                if any(c["hard"] for c in collisions):
+                    raise TeamError(
+                        "Write scopes overlap an active peer or in-flight claim; arrange a handoff"
+                    )
             db.execute(
                 "UPDATE peer_members SET lane=?,state=?,paths=?,revision=revision+1 WHERE team_id=? AND member_id=?",
                 (
@@ -472,12 +475,18 @@ class PeerStore:
                 f"Member {alias}: {new_state}; workstream={lane if lane is not None else old['lane']}; write scopes={new_paths}. Reason: {user_instruction or 'self update'}. Existing native turns are not forcibly stopped.",
                 f"member:{target['id']}:{old['revision'] + 1}",
             )
-            return dict(
+            member = dict(
                 db.execute(
                     "SELECT * FROM peer_members WHERE team_id=? AND member_id=?",
                     (team_id, target["id"]),
                 ).fetchone()
             )
+            member.update(
+                checkouts.member_view(
+                    db, team["project"], target["id"], new_paths, team_id=team["id"]
+                )
+            )
+            return member
 
     def set_state(self, actor, team_id, revision, state, user_instruction, evidence=""):
         if state not in {"active", "paused", "done", "cancelled"}:
@@ -509,22 +518,15 @@ class PeerStore:
                     "SELECT member_id,paths FROM peer_members WHERE team_id=? AND state='active'",
                     (team_id,),
                 ):
-                    reserved = db.execute(
-                        "SELECT m.paths FROM peer_members m JOIN peer_teams t ON t.id=m.team_id WHERE t.project=? AND t.id!=? AND t.state='active' AND m.state='active' AND m.member_id!=? UNION ALL SELECT task.paths FROM peer_tasks task JOIN peer_teams t ON t.id=task.team_id WHERE t.project=? AND task.owner!=? AND task.state='working'",
-                        (
-                            team["project"],
-                            team_id,
-                            own["member_id"],
-                            team["project"],
-                            own["member_id"],
-                        ),
-                    ).fetchall()
-                    if any(
-                        overlaps(a, b)
-                        for a in json.loads(own["paths"])
-                        for held in reserved
-                        for b in json.loads(held["paths"])
-                    ):
+                    reserved = checkouts.conflicts(
+                        db,
+                        team["project"],
+                        own["member_id"],
+                        json.loads(own["paths"]),
+                        skip_team=team_id,
+                        team_id=team["id"],
+                    )
+                    if any(c["hard"] for c in reserved):
                         raise TeamError(
                             "Cannot resume overlapping project write scopes; arrange a handoff first"
                         )
@@ -668,6 +670,15 @@ class PeerStore:
                 )
             ]
             for member in roster:
+                member.update(
+                    checkouts.member_view(
+                        db,
+                        team["project"],
+                        member["member_id"],
+                        json.loads(member["paths"]),
+                        team_id=team["id"],
+                    )
+                )
                 member.update(member_progress(db, team_id, member["member_id"]))
             tasks = [
                 dict(r)

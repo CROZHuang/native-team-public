@@ -14,6 +14,7 @@ from .identity import ConnectionIdentity
 from .availability import Availability
 from .peers import PeerStore
 from .peer_tools import register
+from .checkouts import project_path
 from .store import CLAUDE_ALIASES, Store, TeamError, conversation_uuid
 
 
@@ -56,7 +57,8 @@ def serve(state, provider):
     ) -> dict:
         """Join this conversation. Codex uses CODEX_THREAD_ID. Claude uses CLAUDE_CODE_SESSION_ID or its own explicit session UUID when absent."""
         nonlocal participant, claude_needs_confirmation
-        project = str(Path(project).expanduser().resolve())
+        checkout = str(Path(project).expanduser().resolve())
+        project = str(project_path(store.state, checkout))
         if provider == "claude":
             if claude_needs_confirmation and native_session_id is None:
                 raise TeamError(
@@ -89,7 +91,7 @@ def serve(state, provider):
         if provider == "agy" or (provider == "claude" and alias in CLAUDE_ALIASES):
             identity.acquire(provider, project, alias)
         try:
-            participant = store.join(provider, alias, project, native_id)
+            participant = store.join(provider, alias, checkout, native_id)
             claude_needs_confirmation = False
         except Exception:
             if participant is None:

@@ -6,6 +6,8 @@ import sqlite3
 import time
 import uuid
 
+from .checkouts import has_checkouts
+
 VERSION = 1
 AVAILABILITY_TABLE = """CREATE TABLE member_availability (
     member_id TEXT PRIMARY KEY REFERENCES members(id),
@@ -157,6 +159,15 @@ def has_recovery(db):
     )
 
 
+def has_task_changes(db):
+    return (
+        db.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='peer_task_changes'"
+        ).fetchone()
+        is not None
+    )
+
+
 def migrate(store):
     """Explicit, idempotent migration; a stable live backup precedes all DDL."""
     backup = None
@@ -168,6 +179,11 @@ def migrate(store):
             and has_quota(db)
             and has_native_quota(db)
             and has_recovery(db)
+            and has_task_changes(db)
+            and has_checkouts(db)
+            and db.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='trigger' AND name='reset_task_checkout'"
+            ).fetchone()
         ):
             return None
         if version not in (0, VERSION):
@@ -216,5 +232,19 @@ def migrate(store):
                 db.execute(statement)
         if not has_recovery(db):
             db.execute(RECOVERY_TABLE)
+        if not has_checkouts(db):
+            db.execute("""CREATE TABLE IF NOT EXISTS member_checkouts(member_id TEXT PRIMARY KEY REFERENCES members(id),
+                checkout TEXT NOT NULL, branch TEXT NOT NULL DEFAULT '', updated REAL NOT NULL)""")
+            db.execute("""CREATE TABLE IF NOT EXISTS task_checkouts(task_id TEXT PRIMARY KEY REFERENCES peer_tasks(id),
+                checkout TEXT NOT NULL, branch TEXT NOT NULL DEFAULT '', updated REAL NOT NULL)""")
+        # Old MCP processes also transfer and claim work. Clear stale locations
+        # inside their transaction; new clients record the verified location after claiming.
+        db.execute("""CREATE TRIGGER IF NOT EXISTS reset_task_checkout AFTER UPDATE OF owner,state ON peer_tasks
+            WHEN NEW.owner != OLD.owner OR (NEW.state='working' AND OLD.state!='working')
+            BEGIN DELETE FROM task_checkouts WHERE task_id=NEW.id; END""")
+        if not has_task_changes(db):
+            db.execute("""CREATE TABLE peer_task_changes(task_id TEXT NOT NULL REFERENCES peer_tasks(id),
+                revision INTEGER NOT NULL, manifest TEXT NOT NULL, created REAL NOT NULL,
+                PRIMARY KEY(task_id,revision))""")
         db.execute(f"PRAGMA user_version={VERSION}")
     return backup

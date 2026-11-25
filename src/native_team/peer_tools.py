@@ -122,11 +122,22 @@ def register(mcp, peers, actor):
 
     @mcp.tool()
     def peer_task_report(
-        task_id: str, revision: int, result: str, evidence: str, blocked: bool = False
+        task_id: str,
+        revision: int,
+        result: str,
+        evidence: str,
+        blocked: bool = False,
+        changes: dict | None = None,
     ) -> dict:
         """Current executor preserves evidence for independent review. A matching late result is allowed while inactive."""
         return tasks.report(
-            current(), task_id, revision, result, evidence, blocked=blocked
+            current(),
+            task_id,
+            revision,
+            result,
+            evidence,
+            blocked=blocked,
+            changes=changes,
         )
 
     @mcp.tool()

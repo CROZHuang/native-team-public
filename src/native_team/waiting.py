@@ -15,6 +15,7 @@ import sqlite3
 import sys
 import time
 
+from .checkouts import project_path
 from .schema import available
 from .store import TeamError, conversation_uuid
 from .availability import parse_resume_after, read_availability
@@ -230,7 +231,7 @@ def wait(
     not_before = parse_resume_after(not_before)
     state, project = (
         Path(state).expanduser().resolve(),
-        str(Path(project).expanduser().resolve()),
+        str(project_path(state, project)),
     )
     path = state / "team.sqlite3"
     if not path.is_file():

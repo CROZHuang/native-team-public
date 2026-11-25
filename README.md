@@ -39,6 +39,35 @@ Once the sessions have joined, one peer calls `peer_team` with the participating
 
 All participating clients must reach the same local state directory. The default is `.local/state/native-team` in the user's home. Put `--state PATH` before the subcommand to use a different private directory. On Windows choose an NTFS location with account-appropriate access controls.
 
+## Review changes across rounds
+
+After `native-team migrate`, the executor can include an optional `changes` object in
+`peer_task_report`. Generate one for individual files in the task's declared write scope:
+
+```sh
+native-team task-manifest --project . --paths src/app.py src/menu.py
+```
+
+Add `--base HEAD` to identify additions and deletions relative to a commit. Without Git the
+helper fingerprints existing files, including binaries. Reports accept up to 64 entries and
+32 KiB of metadata. Include the complete selection for each round. Omitting the manifest
+in a later report leaves that report's change list empty.
+
+Open the task in the workbench and check the files you have reviewed. After a revised report,
+a changed fingerprint reopens that file. These marks are personal to the browser profile
+and origin. Use the same local UI port across restarts to keep them visible. Task acceptance
+still requires the designated reviewer. The workbench reads submitted metadata from the ledger.
+
+## Working in linked Git worktrees
+
+Enroll from the root of an existing linked checkout. On an upgraded ledger, Native Team
+recognizes the main repository by verifying Git's worktree metadata in both directions.
+Each member retains its own checkout. In the same checkout overlapping write scopes block;
+across linked checkouts the workbench and `native-team status` identify paths to reconcile
+before merging. Changing checkouts requires releasing open writing claims and declared active
+write scopes. Existing worktree-local project records keep their historical project identity.
+Worktree creation, branch operations and merges remain with the developer.
+
 ## Test the release
 
 The **Native Team compatibility** GitHub Actions workflow runs on push, pull request or manual dispatch. One build produces a Python wheel. Every test job checks its SHA-256, installs it into a fresh virtual environment and runs the same tests. No provider account or API key is required.

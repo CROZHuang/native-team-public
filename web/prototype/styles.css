@@ -441,3 +441,9 @@ button:disabled { opacity: .65; }
   .workflow-timeline li > div { padding-left: 12px; }
   .record-search input { flex-basis: 100%; }
 }
+
+.change-manifest ul { list-style: none; padding: 0; }
+.change-manifest li { margin-block: .5rem; overflow-wrap: anywhere; }
+.change-manifest label { cursor: pointer; }
+.change-manifest label:has(input:checked) { opacity: .75; }
+.change-manifest input { vertical-align: middle; }

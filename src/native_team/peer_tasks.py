@@ -3,7 +3,9 @@
 import json
 import time
 
-from .peers import overlaps
+from . import change_manifest
+from .schema import has_task_changes
+from . import checkouts
 from .store import TeamError, checked, new_id
 from .availability import read_availability
 
@@ -63,12 +65,12 @@ class PeerTasks:
                 raise TeamError(
                     "Task writes exceed the executor's declared scope; agree a scope update first"
                 )
-        for task in db.execute(
-            "SELECT task.paths FROM peer_tasks task JOIN peer_teams t ON t.id=task.team_id WHERE t.project=? AND task.owner!=? AND task.state='working'",
-            (team["project"], owner),
-        ):
-            if any(overlaps(a, b) for a in paths for b in json.loads(task["paths"])):
-                raise TeamError("Another executor still holds an in-flight write scope")
+        collisions = checkouts.conflicts(
+            db, team["project"], owner, paths, team_id=team["id"]
+        )
+        if any(c["hard"] for c in collisions):
+            raise TeamError("Another executor holds an overlapping write scope")
+        return collisions
 
     def create(
         self,
@@ -92,7 +94,10 @@ class PeerTasks:
             reviewer = self.peers.by_alias(db, team["project"], reviewer_alias)["id"]
             if owner == reviewer:
                 raise TeamError("An executor cannot review their own task")
-            scopes = self.peers.paths(team["project"], paths or [])
+            scopes = self.peers.paths(
+                checkouts.location(db, owner).get("checkout", team["project"]),
+                paths or [],
+            )
             prior = db.execute(
                 "SELECT * FROM peer_tasks WHERE team_id=? AND created_by=? AND request_key=?",
                 (team_id, actor, request_key),
@@ -113,7 +118,7 @@ class PeerTasks:
                     raise TeamError(
                         "This peer is in quota cooldown; preserve existing work and wait for verified recovery"
                     )
-            self._scope(db, team, owner, scopes)
+            warnings = self._scope(db, team, owner, scopes)
             if (
                 db.execute(
                     "SELECT count(*) FROM peer_tasks WHERE team_id=? AND state NOT IN ('accepted','cancelled')",
@@ -147,7 +152,10 @@ class PeerTasks:
                     stamp,
                 ),
             )
-            return self._record(db, actor, task_id, "assigned", [owner])
+            return {
+                **self._record(db, actor, task_id, "assigned", [owner]),
+                "merge_warnings": warnings,
+            }
 
     def get(self, actor, task_id):
         with self.store.transaction() as db:
@@ -159,6 +167,14 @@ class PeerTasks:
                     (task_id,),
                 )
             ]
+            if checkouts.has_checkouts(db):
+                loc = db.execute(
+                    "SELECT checkout,branch FROM task_checkouts WHERE task_id=?",
+                    (task_id,),
+                ).fetchone()
+                if loc:
+                    task.update(dict(loc))
+            task["changes"] = change_manifest.latest(db, task_id)
             return {"task": task, "history": history}
 
     def take(self, actor, team_id):
@@ -170,9 +186,9 @@ class PeerTasks:
             ).fetchone()
             if task is None:
                 return None
-            self._scope(db, team, actor, json.loads(task["paths"]))
+            warnings = self._scope(db, team, actor, json.loads(task["paths"]))
             if task["state"] == "working" and not task["handoff_needed"]:
-                return dict(task)
+                return {**dict(task), "merge_warnings": warnings}
             if read_availability(db, actor)["held"]:
                 raise TeamError(
                     "This peer is in quota cooldown; checkpoint existing work without claiming new work"
@@ -181,9 +197,21 @@ class PeerTasks:
                 "UPDATE peer_tasks SET state='working',handoff_needed=0,revision=revision+1,updated=? WHERE id=?",
                 (time.time(), task["id"]),
             )
-            return self._record(db, actor, task["id"], "claimed")
+            if checkouts.has_checkouts(db):
+                loc = checkouts.location(db, actor)
+                if loc:
+                    db.execute(
+                        "INSERT OR REPLACE INTO task_checkouts VALUES(?,?,?,?)",
+                        (task["id"], loc["checkout"], loc["branch"], time.time()),
+                    )
+            return {
+                **self._record(db, actor, task["id"], "claimed"),
+                "merge_warnings": warnings,
+            }
 
-    def report(self, actor, task_id, revision, result, evidence, *, blocked=False):
+    def report(
+        self, actor, task_id, revision, result, evidence, *, blocked=False, changes=None
+    ):
         result, evidence = (
             checked(result, "Result"),
             checked(evidence, "Evidence or blocker"),
@@ -208,6 +236,23 @@ class PeerTasks:
                 "UPDATE peer_tasks SET state=?,result=?,evidence=?,handoff_needed=0,revision=revision+1,updated=? WHERE id=?",
                 (state, result, evidence, time.time(), task_id),
             )
+            if changes is not None:
+                if not has_task_changes(db):
+                    raise TeamError(
+                        "Run native-team migrate before submitting a change manifest"
+                    )
+                manifest = change_manifest.validate(changes, json.loads(task["paths"]))
+                loc = checkouts.location(db, actor)
+                root = loc.get("checkout") or self.store.member(db, actor)["project"]
+                for file in changes["files"]:
+                    if self.peers.paths(root, [file["path"]]) != [file["path"]]:
+                        raise TeamError(
+                            "Manifest entry is not a canonical file inside the task scope"
+                        )
+                db.execute(
+                    "INSERT INTO peer_task_changes VALUES(?,?,?,?)",
+                    (task_id, revision + 1, manifest, time.time()),
+                )
             recipients = {task["reviewer"]}
             if task["reviewer_handoff_needed"] or blocked:
                 recipients.add(task["created_by"])
@@ -317,8 +362,9 @@ class PeerTasks:
                 raise TeamError(
                     "Arrange review ownership before replacing an active peer"
                 )
+            warnings = []
             if owner_changed:
-                self._scope(db, team, owner, json.loads(task["paths"]))
+                warnings = self._scope(db, team, owner, json.loads(task["paths"]))
             if reviewer_changed:
                 self.peers.member(db, reviewer, team["id"])
             state = "ready" if owner != task["owner"] else task["state"]
@@ -339,13 +385,15 @@ class PeerTasks:
                     task_id,
                 ),
             )
-            return self._record(
+            updated = self._record(
                 db,
                 actor,
                 task_id,
                 "handoff",
                 {task["owner"], task["reviewer"], owner, reviewer, task["created_by"]},
             )
+
+            return {**updated, "merge_warnings": warnings}
 
     def recover(self, actor, task_id, revision, user_instruction, stop_evidence):
         instruction = checked(

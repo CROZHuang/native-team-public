@@ -53,6 +53,118 @@ class PeerFixture(unittest.TestCase):
 
 
 class FlatTeamTests(PeerFixture):
+    def test_linked_checkout_reservations_and_private_project_pin(self):
+        import subprocess
+        from native_team.checkouts import identify
+        from native_team.inspection import list_teams
+        from native_team.peer_tasks import PeerTasks
+        from native_team.waiting import wait
+        from native_team.workbench_data import team_detail
+
+        main, linked = self.root / "repo", self.root / "linked"
+
+        def git(*args):
+            subprocess.run(["git", *map(str, args)], check=True, capture_output=True)
+
+        git("init", "-b", "main", main)
+        git(
+            "-C",
+            main,
+            "-c",
+            "user.name=Fixture",
+            "-c",
+            "user.email=test@example.invalid",
+            "-c",
+            "commit.gpgsign=false",
+            "commit",
+            "--allow-empty",
+            "-m",
+            "fixture",
+        )
+        git("-C", main, "worktree", "add", "-b", "review", linked)
+        self.assertEqual(identify(linked), (main, "review"))
+        fake = self.root / "fake"
+        fake.mkdir()
+        (fake / ".git").write_bytes((linked / ".git").read_bytes())
+        self.assertEqual(identify(fake)[0], fake)
+        a, b, c = [
+            self.store.join("agy", name, path)["id"]
+            for name, path in [("a", main), ("b", linked), ("c", linked)]
+        ]
+        team = self.peers.create(a, "Linked", "Evidence", ["a", "b", "c"], "linked")[
+            "id"
+        ]
+        self.assertEqual(list_teams(self.store.state, linked)[0]["name"], "Linked")
+        self.assertTrue(wait(self.store.state, linked, "b", timeout=1)["ready"])
+        self.peers.update_member(a, team, "a", 1, paths=["src"])
+        second = self.peers.update_member(b, team, "b", 1, paths=["src"])
+        self.assertEqual(second["merge_warnings"][0]["alias"], "a")
+        with self.assertRaisesRegex(TeamError, "overlap"):
+            self.peers.update_member(c, team, "c", 1, paths=["src"])
+
+        def sync(actor):
+            page = self.peers.sync(actor, team)
+            self.peers.acknowledge(actor, team, page["team"]["epoch"], page["cursor"])
+
+        sync(a)
+        tasks = PeerTasks(self.peers)
+        tasks.create(a, team, "b", "a", "Implement", "Review", "one", ["src"])
+        sync(b)
+        self.assertEqual(
+            tasks.take(b, team)["merge_warnings"][0]["checkout"], str(main)
+        )
+        with self.assertRaisesRegex(TeamError, "changing checkout"):
+            self.store.join("agy", "b", main)
+        self.assertTrue(
+            next(
+                m
+                for m in team_detail(self.store.state, team)["members"]
+                if m["alias"] == "a"
+            )["merge_warnings"]
+        )
+        # A pre-upgrade client changes owner/state without knowing the checkout tables.
+        with self.store.transaction() as db:
+            task_id = db.execute(
+                "SELECT id FROM peer_tasks WHERE team_id=?", (team,)
+            ).fetchone()[0]
+            db.execute("UPDATE peer_tasks SET state='blocked' WHERE id=?", (task_id,))
+            self.assertIsNotNone(
+                db.execute(
+                    "SELECT 1 FROM task_checkouts WHERE task_id=?", (task_id,)
+                ).fetchone()
+            )
+            db.execute(
+                "UPDATE peer_tasks SET state='ready',owner=? WHERE id=?", (c, task_id)
+            )
+            self.assertIsNone(
+                db.execute(
+                    "SELECT 1 FROM task_checkouts WHERE task_id=?", (task_id,)
+                ).fetchone()
+            )
+            db.execute("DELETE FROM member_checkouts WHERE member_id=?", (c,))
+            db.execute("UPDATE peer_tasks SET state='working' WHERE id=?", (task_id,))
+            db.execute(
+                "UPDATE peer_members SET state='inactive' WHERE member_id=? AND team_id=?",
+                (c, team),
+            )
+        with self.assertRaisesRegex(TeamError, "overlap"):
+            self.peers.update_member(a, team, "a", 2, paths=["src", "other"])
+        self.peers.update_member(a, team, "a", 2, state="inactive")
+        historical = next(
+            m
+            for m in team_detail(self.store.state, team)["members"]
+            if m["alias"] == "a"
+        )
+        self.assertEqual(historical["merge_warnings"], [])
+        pin = self.store.state / "claude-pathology-project"
+        try:
+            pin.symlink_to(main, target_is_directory=True)
+        except OSError:
+            return  # Pin-specific platform privilege is covered separately by test_claude.
+        for alias in ("claude-pathology", "claude-art"):
+            with self.assertRaises(TeamError):
+                self.store.join("claude", alias, linked, str(uuid.uuid4()))
+
     def test_case_and_unicode_aliases_cannot_reserve_the_same_portable_write_scope(
         self,
     ):
@@ -292,8 +404,10 @@ class FlatTeamTests(PeerFixture):
                 acl = descriptor.GetSecurityDescriptorDacl()
                 self.assertIsNotNone(acl)
                 self.assertGreater(acl.GetAceCount(), 0)
-                return win32security.ConvertSecurityDescriptorToStringSecurityDescriptor(
-                    descriptor, win32security.SDDL_REVISION_1, info
+                return (
+                    win32security.ConvertSecurityDescriptorToStringSecurityDescriptor(
+                        descriptor, win32security.SDDL_REVISION_1, info
+                    )
                 )
 
             reference = self.backup.with_suffix(".acl-reference")

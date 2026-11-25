@@ -4,6 +4,8 @@ import json
 import math
 import time
 
+from .change_manifest import latest
+from . import checkouts
 from .inspection import readonly_snapshot
 from .schema import available, has_availability
 from .store import TeamError
@@ -193,6 +195,7 @@ def _page(db, identity, section, cursor=None):
     elif section == "tasks":
         for row in rows:
             try:
+                row["changes"] = latest(db, row["id"])
                 row["paths"] = json.loads(row["paths"])
             except (json.JSONDecodeError, TypeError) as error:
                 raise TeamError("无法解析任务中保存的写入范围。") from error
@@ -212,7 +215,7 @@ def team_detail(state, identity):
         result["members"] = [
             dict(row)
             for row in db.execute(
-                """SELECT n.id AS member_id,n.alias,n.provider,p.lane,p.state,
+                """SELECT n.id AS member_id,n.alias,n.provider,p.lane,p.state,p.paths,
                 b.current,b.next_step,b.blockers,b.handoffs,b.updated AS reported_at
             FROM peer_members p JOIN members n ON n.id=p.member_id
             LEFT JOIN peer_boards b ON b.team_id=p.team_id AND b.member_id=p.member_id
@@ -222,6 +225,15 @@ def team_detail(state, identity):
         ]
         for member in result["members"]:
             actor = member.pop("member_id")
+            member.update(
+                checkouts.member_view(
+                    db,
+                    result["project"],
+                    actor,
+                    json.loads(member.pop("paths")),
+                    team_id=identity,
+                )
+            )
             if result["state"] not in {"done", "cancelled"}:
                 member.update(member_progress(db, identity, actor, now=stamp))
         result["task_counts"] = {

@@ -12,6 +12,7 @@ import sqlite3
 import sys
 import sysconfig
 
+from .checkouts import location
 from .availability import read_availability
 from .quota_capture import pseudonym, read_json, text
 from .schema import available, has_native_quota
@@ -120,6 +121,7 @@ def session_start(payload, state):
             if len(matches) != 1:
                 return {}
             member = matches[0]
+            checkout = location(db, member["id"]).get("checkout", member["project"])
             if not db.execute(
                 """SELECT 1 FROM peer_members p JOIN peer_teams t ON t.id=p.team_id
                 WHERE p.member_id=? AND p.state='active' AND t.state='active' LIMIT 1""",
@@ -130,7 +132,7 @@ def session_start(payload, state):
                 return {}
         reminder = (
             f"This native conversation has a retained Native Team enrollment as {member['alias']} "
-            f"in {member['project']}. Rejoin that same identity with your own native team_join "
+            f"in {checkout}. Rejoin that same identity with your own native team_join "
             "if this MCP connection is new; do not create a replacement alias. "
             + recovery_guidance(member["project"], member["alias"], state)
         )

@@ -15,6 +15,7 @@ import json
 from pathlib import Path
 import time
 
+from .checkouts import project_path
 from .availability import read_availability
 from .peers import PeerStore
 from .quota_capture import process_info
@@ -131,7 +132,7 @@ def agy_watches(db, state, proc=Path("/proc")):
             ):
                 continue
             if (
-                str(Path(options.get("--project", "")).resolve())
+                str(project_path(state, options["--project"]))
                 != members[actor]["project"]
             ):
                 continue

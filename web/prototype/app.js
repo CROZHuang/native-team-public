@@ -543,6 +543,43 @@
     });
   }
 
+  // A reviewer's marks stay in this browser, separate from shared task acceptance.
+  const reviewStorageKey = "native-team:viewed-files:v1";
+  let viewedFiles = new Map();
+  try {
+    const rows = JSON.parse(localStorage.getItem(reviewStorageKey) || "[]");
+    if (Array.isArray(rows)) viewedFiles = new Map(rows.slice(-1024));
+  } catch { /* Private browsing can disable storage. */ }
+  function renderManifest(task) {
+    const report = task.changes;
+    if (!report?.files?.length) return "";
+    let viewed = 0;
+    const entries = report.files.map((file, index) => {
+      const key = JSON.stringify([task.id, file.path]);
+      const previous = viewedFiles.get(key);
+      const digest = file.status + ":" + file.fingerprint.toLowerCase();
+      const checked = previous?.digest === digest;
+      if (checked) viewed++;
+      const status = checked ? "已查看" : previous ? "有新变更" : "未查看";
+      const counts = [file.additions != null ? "+" + file.additions : "", file.deletions != null ? "−" + file.deletions : ""].filter(Boolean).join(" ");
+      return `<li><label><input type="checkbox" data-review-index="${index}" data-review-task="${esc(task.id)}" ${checked ? "checked" : ""}> ${esc(file.path)} · ${status}</label>${checked ? "" : `<p>${esc(file.status)} ${esc(counts)} ${esc(file.summary || "")}</p>`}</li>`;
+    });
+    return `<section class="change-manifest"><h3>变更清单 · ${viewed}/${entries.length} 已查看</h3><ul>${entries.join("")}</ul></section>`;
+  }
+  document.addEventListener("change", (event) => {
+    const input = event.target.closest("[data-review-index]");
+    if (!input) return;
+    const task = team()?.tasks.find((item) => item.id === input.dataset.reviewTask);
+    const file = task?.changes?.files[Number(input.dataset.reviewIndex)];
+    if (!file) return;
+    const key = JSON.stringify([task.id, file.path]);
+    viewedFiles.delete(key);
+    if (input.checked) viewedFiles.set(key, {digest: file.status + ":" + file.fingerprint.toLowerCase(), revision: task.changes.revision});
+    while (viewedFiles.size > 1024) viewedFiles.delete(viewedFiles.keys().next().value);
+    try { localStorage.setItem(reviewStorageKey, JSON.stringify([...viewedFiles])); } catch { /* Keep in-memory marks. */ }
+    input.closest(".change-manifest").outerHTML = renderManifest(task);
+    document.querySelector(`[data-review-index="${Number(input.dataset.reviewIndex)}"]`)?.focus();
+  });
   let detailTrigger = null;
   function openDetail(kind, id, trigger) {
     const item = team();
@@ -552,7 +589,7 @@
       const task = item.tasks.find((entry) => entry.id === id);
       if (!task) return;
       title = task.title; label = "任务详情";
-      body = `${taskStatus(task)}<p class="detail-lead">${esc(task.brief)}</p><dl class="people-grid"><div><dt>执行成员</dt><dd>${esc(task.owner)}</dd></div><div><dt>独立评审</dt><dd>${esc(task.reviewer)}</dd></div></dl>${task.handoff_needed || task.reviewer_handoff_needed ? '<p class="detail-note">任务仍在等待原生会话完成交接；列出的成员不代表已接手。</p>' : ""}<section><h3>怎样算完成</h3>${list(task.acceptance)}</section><section><h3>当前报告</h3><p>${esc(task.result)}</p></section><section><h3>证据与依据</h3>${task.evidence.length ? list(task.evidence) : '<p class="muted">尚未提交证据。</p>'}</section>${source.live ? `<section><h3>任务声明的写入范围</h3>${task.paths?.length ? list(task.paths) : '<p class="muted">只读任务，没有声明写入路径。</p>'}</section>` : ""}<p class="detail-note">${esc(task.note)}</p>`;
+      body = `${taskStatus(task)}<p class="detail-lead">${esc(task.brief)}</p><dl class="people-grid"><div><dt>执行成员</dt><dd>${esc(task.owner)}</dd></div><div><dt>独立评审</dt><dd>${esc(task.reviewer)}</dd></div></dl>${renderManifest(task)}${task.handoff_needed || task.reviewer_handoff_needed ? '<p class="detail-note">任务仍在等待原生会话完成交接；列出的成员不代表已接手。</p>' : ""}<section><h3>怎样算完成</h3>${list(task.acceptance)}</section><section><h3>当前报告</h3><p>${esc(task.result)}</p></section><section><h3>证据与依据</h3>${task.evidence.length ? list(task.evidence) : '<p class="muted">尚未提交证据。</p>'}</section>${source.live ? `<section><h3>任务声明的写入范围</h3>${task.paths?.length ? list(task.paths) : '<p class="muted">只读任务，没有声明写入路径。</p>'}</section>` : ""}<p class="detail-note">${esc(task.note)}</p>`;
     } else if (kind === "flow") {
       const flow = workflow.flows(item).find((entry) => entry.id === id);
       if (!flow) return;
@@ -562,7 +599,7 @@
       const member = item.members.find((entry) => entry.id === id);
       if (!member) return;
       title = member.id; label = "成员主线";
-      body = `<p class="detail-lead">${esc(providerLabel(member.provider))} · ${esc(member.lane)}</p><p class="detail-note">${closed(item) ? "团队已结束；下列为保留的历史报告。" : item.state === "paused" ? "团队已暂停；成员登记不代表正在执行。" : "以下是成员报告的工作，不是终端在线监测。"}</p><section><h3>当前工作</h3><p>${esc(member.current)}</p></section><section><h3>下一步</h3><p>${esc(member.next)}</p></section>${memberAvailabilityDetail(member, item)}<section><h3>阻塞与等待</h3><p>${esc(member.blockers)}</p></section><section><h3>交接</h3><p>${esc(member.handoff)}</p></section>${member.task ? detailButton("task", member.task, "查看相关任务", "outline-button") : ""}<p class="view-note">${source.live ? "工作板时间" : "示例报告时间"}：${esc(member.reported)}</p>`;
+      body = `<p class="detail-lead">${esc(providerLabel(member.provider))} · ${esc(member.lane)}</p><p class="detail-note">${closed(item) ? "团队已结束；下列为保留的历史报告。" : item.state === "paused" ? "团队已暂停；成员登记不代表正在执行。" : "以下是成员报告的工作，不是终端在线监测。"}</p><section><h3>当前工作</h3><p>${esc(member.current)}</p></section><section><h3>下一步</h3><p>${esc(member.next)}</p></section>${memberAvailabilityDetail(member, item)}${member.checkout ? `<section><h3>工作目录</h3><p>${esc(member.checkout)} ${esc(member.branch || "")}</p>${member.merge_warnings?.length ? `<strong>合并时需复核</strong>${list(member.merge_warnings.map(w => w.alias + " · " + w.paths.join(", "))) }` : ""}</section>` : ""}<section><h3>阻塞与等待</h3><p>${esc(member.blockers)}</p></section><section><h3>交接</h3><p>${esc(member.handoff)}</p></section>${member.task ? detailButton("task", member.task, "查看相关任务", "outline-button") : ""}<p class="view-note">${source.live ? "工作板时间" : "示例报告时间"}：${esc(member.reported)}</p>`;
     } else if (kind === "decision") {
       const decision = item.decisions.find((entry) => entry.id === id);
       if (!decision) return;

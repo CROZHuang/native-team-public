@@ -7,6 +7,8 @@ import sqlite3
 import time
 import uuid
 
+from . import checkouts
+
 
 CLIENT_PROVIDERS = ("codex", "agy", "claude")
 CLAUDE_ALIASES = (
@@ -162,18 +164,23 @@ class Store:
             )
         pin = self.state / "claude-pathology-project"
         try:
-            pathology = pin.is_symlink() and pin.resolve(strict=True) == project
+            pinned = pin.resolve(strict=True) if pin.is_symlink() else None
         except FileNotFoundError:
-            pathology = False
+            pinned = None
         except (OSError, RuntimeError) as error:
             raise TeamError(
                 "Cannot verify the owner-approved pathology project"
             ) from error
-        if alias == "claude-pathology" and not pathology:
+        canonical, _ = checkouts.identify(project)
+        if alias == "claude-pathology" and (pinned != project or pinned != canonical):
             raise TeamError(
                 "claude-pathology is reserved for its owner-approved local project"
             )
-        if pathology and alias != "claude-pathology":
+        if (
+            pinned
+            and alias != "claude-pathology"
+            and checkouts.identify(pinned)[0] == canonical
+        ):
             raise TeamError("Use claude-pathology for the approved pathology project")
 
     def join(self, provider, alias, project, native_id=None):
@@ -183,11 +190,14 @@ class Store:
             raise TeamError(
                 "Choose a supported provider and a short alphanumeric alias"
             )
-        project = Path(project).expanduser().resolve()
-        if not project.is_dir() or any(c in str(project) for c in "\r\n\0"):
+        checkout = Path(project).expanduser().resolve()
+        project = checkouts.project_path(self.state, checkout)
+        if not checkout.is_dir() or any(
+            c in str(path) for path in (project, checkout) for c in "\r\n\0"
+        ):
             raise TeamError("Choose an existing project directory")
         if provider == "claude":
-            self._check_claude_project(alias, project)
+            self._check_claude_project(alias, checkout)
         if provider in {"codex", "claude"}:
             native_id = conversation_uuid(provider, native_id)
         elif native_id is not None:
@@ -245,6 +255,32 @@ class Store:
                 db.execute(
                     "INSERT INTO members VALUES(?,?,?,?,?,?)",
                     (member_id, provider, alias, str(project), native_id, time.time()),
+                )
+            if checkouts.has_checkouts(db):
+                old = checkouts.location(db, member_id)
+                previous = old.get("checkout", str(project))
+                if not checkouts.equivalent(previous, str(checkout)) and (
+                    db.execute(
+                        "SELECT 1 FROM peer_tasks WHERE owner=? AND state='working'",
+                        (member_id,),
+                    ).fetchone()
+                    or db.execute(
+                        "SELECT 1 FROM peer_members m JOIN peer_teams t ON t.id=m.team_id WHERE member_id=? AND m.paths!='[]' AND m.state='active' AND t.state IN ('active','paused')",
+                        (member_id,),
+                    ).fetchone()
+                ):
+                    raise TeamError(
+                        "Release working tasks and write scopes before changing checkout"
+                    )
+                db.execute(
+                    """INSERT INTO member_checkouts VALUES(?,?,?,?) ON CONFLICT(member_id) DO UPDATE SET
+                    checkout=excluded.checkout, branch=excluded.branch, updated=excluded.updated""",
+                    (
+                        member_id,
+                        str(checkout),
+                        checkouts.identify(checkout)[1],
+                        time.time(),
+                    ),
                 )
             return dict(
                 db.execute(
@@ -735,7 +771,7 @@ class Store:
                 self.event(db, work["id"], "continuation_requested")
 
     def inspect(self, project):
-        project = str(Path(project).expanduser().resolve())
+        project = str(checkouts.project_path(self.state, project))
         with self.transaction() as db:
             members = [
                 dict(r)
