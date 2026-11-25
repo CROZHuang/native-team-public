@@ -390,6 +390,12 @@ class WorkbenchReadTests(WorkbenchFixture):
 
 
 class WorkbenchHTTPTests(WorkbenchFixture):
+    def test_loopback_startup_is_independent_of_hostname_resolution(self):
+        with patch("socket.getfqdn", side_effect=AssertionError("unexpected DNS lookup")):
+            with make_server(self.store.state) as server:
+                self.assertEqual(server.server_name, "127.0.0.1")
+                self.assertGreater(server.server_port, 0)
+
     def test_idle_preconnect_does_not_block_page_reads(self):
         with socket.create_connection(
             ("127.0.0.1", self.server.server_port), timeout=3

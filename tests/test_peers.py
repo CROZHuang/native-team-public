@@ -282,15 +282,23 @@ class FlatTeamTests(PeerFixture):
         if os.name == "nt":
             import win32security
 
-            # NTFS backups inherit the private state directory's DACL.
-            descriptor = win32security.GetFileSecurity(
-                str(self.backup), win32security.DACL_SECURITY_INFORMATION
-            )
-            acl = descriptor.GetSecurityDescriptorDacl()
-            self.assertIsNotNone(acl)
-            self.assertGreater(acl.GetAceCount(), 0)
-            for index in range(acl.GetAceCount()):
-                self.assertTrue(acl.GetAce(index)[0][1] & 0x10)  # INHERITED_ACE
+            # Compare the entire access policy to a new file in the same private
+            # directory. An effective ACE need not carry the inherited marker.
+            def file_dacl(path):
+                info = win32security.DACL_SECURITY_INFORMATION
+                descriptor = win32security.GetNamedSecurityInfo(
+                    str(path), win32security.SE_FILE_OBJECT, info
+                )
+                acl = descriptor.GetSecurityDescriptorDacl()
+                self.assertIsNotNone(acl)
+                self.assertGreater(acl.GetAceCount(), 0)
+                return win32security.ConvertSecurityDescriptorToStringSecurityDescriptor(
+                    descriptor, win32security.SDDL_REVISION_1, info
+                )
+
+            reference = self.backup.with_suffix(".acl-reference")
+            reference.touch(exist_ok=False)
+            self.assertEqual(file_dacl(self.backup), file_dacl(reference))
         else:
             self.assertEqual(self.backup.stat().st_mode & 0o777, 0o600)
 

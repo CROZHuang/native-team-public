@@ -5,7 +5,7 @@ from importlib.resources import files
 import json
 from pathlib import Path
 import re
-from socketserver import ThreadingMixIn
+from socketserver import TCPServer, ThreadingMixIn
 import threading
 from urllib.parse import parse_qs, urlsplit
 import webbrowser
@@ -43,6 +43,12 @@ class WorkbenchServer(ThreadingMixIn, HTTPServer):
     def __init__(self, *args, **kwargs):
         self.slots = threading.BoundedSemaphore(8)
         super().__init__(*args, **kwargs)
+
+    def server_bind(self):
+        # The advertised and accepted host is a loopback literal. Startup must
+        # also work while the machine's hostname resolver is unavailable.
+        TCPServer.server_bind(self)
+        self.server_name, self.server_port = self.server_address
 
     def process_request(self, request, client_address):
         if not self.slots.acquire(blocking=False):
@@ -89,7 +95,7 @@ def make_server(state, port=0):
             self.end_headers()
             try:
                 self.wfile.write(body)
-            except (BrokenPipeError, ConnectionResetError, TimeoutError):
+            except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError, TimeoutError):
                 pass
 
         def do_GET(self):
