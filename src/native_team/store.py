@@ -17,6 +17,7 @@ CLAUDE_ALIASES = (
     "claude-art",
     "claude-ai-test",
     "claude-pathology",
+    "claude-system",
 )
 
 
@@ -90,10 +91,19 @@ class Store:
         self.path.chmod(0o600)
 
     def connect(self):
-        db = sqlite3.connect(self.path, timeout=5, isolation_level=None)
+        db = sqlite3.connect(self.path, timeout=15, isolation_level=None)
         db.row_factory = sqlite3.Row
         db.execute("PRAGMA foreign_keys=ON")
         return db
+
+    @contextmanager
+    def readonly(self):
+        db = self.connect()
+        try:
+            db.execute("PRAGMA query_only=ON")
+            yield db
+        finally:
+            db.close()
 
     @contextmanager
     def transaction(self):
@@ -732,6 +742,15 @@ class Store:
         stamp = time.time() if at is None else at
         if after_seconds < 1:
             raise TeamError("Continuation deadline must be positive")
+        with self.readonly() as db:
+            self.member(db, actor, "codex")
+            if read_availability(db, actor, now=stamp)["held"]:
+                return
+            if not db.execute(
+                "SELECT 1 FROM work WHERE lead=? AND state='active' AND reminders<2 AND updated<=? LIMIT 1",
+                (actor, stamp - after_seconds),
+            ).fetchone():
+                return
         with self.transaction() as db:
             self.member(db, actor, "codex")
             if read_availability(db, actor, now=stamp)["held"]:

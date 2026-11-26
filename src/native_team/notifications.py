@@ -2,10 +2,18 @@
 
 from pathlib import Path
 import logging
+import sqlite3
 import subprocess
 import threading
 
 from .file_locks import acquire_exclusive_nowait
+
+
+def is_transient_sqlite_lock(error):
+    if not isinstance(error, sqlite3.OperationalError):
+        return False
+    text = str(error).lower()
+    return "locked" in text or "busy" in text
 
 
 def send(executable, notice):
@@ -78,18 +86,59 @@ class Dispatcher:
                     self.stopping.wait(1)
             if self.stopping.is_set():
                 return
-            self.store.recover_notices(self.actor)
+            lock_failures = 0
             while not self.stopping.is_set():
                 try:
-                    self.store.watch_work(self.actor)
-                    notice = self.store.reserve_notice(self.actor)
-                    if notice:
-                        state, detail = send(self.executable, notice)
-                        self.store.notice_result(notice["id"], state, detail)
-                except Exception:
+                    self.store.recover_notices(self.actor)
+                    lock_failures = 0
+                    break
+                except Exception as error:
+                    if is_transient_sqlite_lock(error) and lock_failures < 10:
+                        lock_failures += 1
+                        logging.warning(
+                            "Native Team dispatcher delayed during startup recovery by transient SQLite lock (%d/10)",
+                            lock_failures,
+                        )
+                        self.stopping.wait(min(2 ** min(lock_failures - 1, 3), 10))
+                        continue
+                    logging.exception(
+                        "Native Team dispatcher stopped during recovery; inspect local state"
+                    )
+                    return
+            pending_result = None
+            while not self.stopping.is_set():
+                try:
+                    if pending_result is not None:
+                        self.store.notice_result(*pending_result)
+                        pending_result = None
+                    else:
+                        self.store.watch_work(self.actor)
+                        notice = self.store.reserve_notice(self.actor)
+                        if notice:
+                            state, detail = send(self.executable, notice)
+                            pending_result = (notice["id"], state, detail)
+                            self.store.notice_result(*pending_result)
+                            pending_result = None
+                    lock_failures = 0
+                except Exception as error:
+                    if is_transient_sqlite_lock(error) and lock_failures < 10:
+                        lock_failures += 1
+                        logging.warning(
+                            "Native Team dispatcher retrying after transient SQLite lock (%d/10)",
+                            lock_failures,
+                        )
+                        self.stopping.wait(min(2 ** min(lock_failures - 1, 3), 10))
+                        continue
                     # No private messages or provider stdout/stderr enter logs.
                     logging.exception(
                         "Native Team dispatcher stopped after an internal error; inspect local state"
                     )
                     return
                 self.stopping.wait(1)
+            if pending_result is not None:
+                try:
+                    self.store.notice_result(*pending_result)
+                except Exception:
+                    logging.warning(
+                        "Native Team dispatcher could not persist final notice outcome during shutdown"
+                    )

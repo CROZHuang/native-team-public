@@ -379,6 +379,69 @@ class WorkControllerTests(unittest.TestCase):
         self.store.watch_work(self.lead["id"], at=received_at + 301)
         self.assertIsNotNone(self.store.reserve_notice(self.lead["id"]))
 
+    def test_store_keeps_full_sync_and_dispatcher_retries_result_write_without_resend(
+        self,
+    ):
+        import sqlite3
+        from native_team import notifications
+        from native_team.outbox import Outbox
+        from native_team.peers import PeerStore
+        from native_team.schema import migrate
+
+        with self.store.readonly() as db:
+            self.assertEqual(db.execute("PRAGMA synchronous").fetchone()[0], 2)
+        migrate(self.store)
+        peers = PeerStore(self.store)
+        team = peers.create(
+            self.adviser["id"],
+            "RetryTeam",
+            "Portable lock retry check",
+            ["adviser", "lead"],
+            "retry-team",
+        )["id"]
+        syn = peers.sync(self.lead["id"], team)
+        peers.acknowledge(self.lead["id"], team, syn["team"]["epoch"], syn["cursor"])
+        peers.message(self.adviser["id"], team, "direct", "first", "m1", ["lead"])
+        outbox = Outbox(self.store)
+        original_result = outbox.notice_result
+        stats = {"sends": 0, "writes": 0, "waits": 0}
+
+        def fake_send(_executable, _notice):
+            stats["sends"] += 1
+            return "queued", "Native queue accepted"
+
+        def flaky_result(notice_id, state, detail):
+            stats["writes"] += 1
+            if stats["writes"] == 1:
+                raise sqlite3.OperationalError("database is locked")
+            return original_result(notice_id, state, detail)
+
+        outbox.notice_result = flaky_result
+        dispatcher = notifications.Dispatcher(outbox, self.lead["id"], self.root / "x")
+
+        def step_wait(_timeout):
+            stats["waits"] += 1
+            if stats["waits"] >= 3:
+                dispatcher.stopping.set()
+
+        with (
+            patch.object(notifications, "send", side_effect=fake_send),
+            patch.object(dispatcher.stopping, "wait", side_effect=step_wait),
+        ):
+            dispatcher.run()
+        self.assertEqual(stats["sends"], 1)
+        self.assertEqual(stats["writes"], 2)
+        with self.store.readonly() as db:
+            self.assertEqual(
+                db.execute("SELECT state FROM wake_batches").fetchone()[0], "queued"
+            )
+        # After receipt, the next message reserves and dispatches cleanly.
+        syn2 = peers.sync(self.lead["id"], team)
+        peers.acknowledge(self.lead["id"], team, syn2["team"]["epoch"], syn2["cursor"])
+        peers.message(self.adviser["id"], team, "direct", "second", "m2", ["lead"])
+        next_notice = outbox.reserve_notice(self.lead["id"])
+        self.assertIsNotNone(next_notice)
+
 
 if __name__ == "__main__":
     unittest.main()

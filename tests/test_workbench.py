@@ -475,3 +475,23 @@ class WorkbenchHTTPTests(WorkbenchFixture):
             self.request(f"/api/teams/{self.team['id']}/activity?cursor=bad")[0], 400
         )
         self.assertEqual(self.dump(), before)
+
+    def test_monitor_status_reports_stopped_with_pending_codex_deliveries(self):
+        status, _, body = self.request("/api/teams")
+        self.assertEqual(status, 200)
+        directory = json.loads(body)
+        self.assertIn("monitor", directory)
+        self.assertFalse(directory["monitor"]["running"])
+        self.assertGreaterEqual(directory["monitor"]["all_active_codex"], 1)
+
+        status, _, body = self.request(f"/api/teams/{self.team['id']}")
+        self.assertEqual(status, 200)
+        detail = json.loads(body)
+        self.assertIn("monitor", detail)
+        self.assertFalse(detail["monitor"]["running"])
+        expected_codex = sum(
+            m["provider"] == "codex" and m["state"] == "active"
+            for m in detail["members"]
+        )
+        self.assertEqual(detail["monitor"]["active_codex"], expected_codex)
+        self.assertGreaterEqual(expected_codex, 1)

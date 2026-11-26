@@ -8,6 +8,49 @@ from .checkouts import project_path
 from .store import CLIENT_PROVIDERS, Store, TeamError
 
 
+def _monitor_warning(state):
+    from .inspection import readonly_snapshot
+    from .monitor import running
+    from .schema import available
+
+    if running(state) is not False:
+        return None
+    with readonly_snapshot(state) as db:
+        if db is None or not available(db):
+            return None
+        active_codex = db.execute(
+            """SELECT count(DISTINCT pm.member_id) FROM peer_members pm
+            JOIN peer_teams t ON t.id=pm.team_id JOIN members m ON m.id=pm.member_id
+            WHERE t.state='active' AND pm.state='active' AND m.provider='codex'"""
+        ).fetchone()[0]
+        pending_codex = db.execute(
+            """SELECT count(*) FROM peer_deliveries d
+            JOIN peer_messages msg ON msg.id=d.message_id
+            JOIN peer_members pm ON pm.team_id=msg.team_id AND pm.member_id=d.recipient
+            JOIN peer_teams t ON t.id=msg.team_id
+            JOIN members m ON m.id=d.recipient
+            WHERE m.provider='codex' AND pm.state='active'
+            AND (t.state='active' OR msg.kind='lifecycle')
+            AND d.received_at IS NULL AND d.state='pending'"""
+        ).fetchone()[0]
+    if not active_codex and not pending_codex:
+        return None
+    backlog = (
+        f" ({pending_codex} pending Codex notifications across active teams)"
+        if pending_codex
+        else f" ({active_codex} active Codex peers)"
+    )
+    hint = (
+        "Inspect: systemctl --user status native-team-monitor"
+        if sys.platform == "linux"
+        else "Start the monitor with: native-team monitor"
+    )
+    return (
+        f"WARNING: Codex notification monitor is NOT running{backlog}; "
+        f"Codex sessions will not wake automatically. {hint}"
+    )
+
+
 def _print_claude_windows(windows):
     from .claude_quota import WINDOWS
 
@@ -197,6 +240,9 @@ def main():
                 print(json.dumps(value, ensure_ascii=False, indent=2))
             else:
                 print("Native Team · 原生额度")
+                warning = _monitor_warning(args.state)
+                if warning:
+                    print(f"  {warning}")
                 print(
                     "自动采集："
                     + ("已启用" if value["collector"].get("enabled") else "未启用")
@@ -425,6 +471,9 @@ def main():
                 else "All projects"
             )
             print(f"Native Team · {scope} · {len(report)} teams")
+            warning = _monitor_warning(args.state)
+            if warning:
+                print(f"  {warning}")
             for team in report:
                 print(f"\n{team['name']}  [{team['state']}]")
                 print(f"  Project: {team['project']}")
@@ -472,10 +521,17 @@ def main():
                 print(json.dumps(report, ensure_ascii=False, indent=2))
                 return
             print(f"Native Team · {report['project']}")
-            print(
-                "  Notification monitor: "
-                + ("active" if report["monitor_active"] else "not running")
+            monitor_label = (
+                "active"
+                if report["monitor_active"] is True
+                else "not running"
+                if report["monitor_active"] is False
+                else "unknown"
             )
+            print("  Notification monitor: " + monitor_label)
+            warning = _monitor_warning(args.state)
+            if warning:
+                print(f"  {warning}")
             for member in report["members"]:
                 age = max(0, int(time.time() - member["last_seen"]))
                 print(

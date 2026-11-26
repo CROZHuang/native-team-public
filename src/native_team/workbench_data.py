@@ -2,11 +2,13 @@
 
 import json
 import math
+from pathlib import Path
 import time
 
 from .change_manifest import latest
 from . import checkouts
 from .inspection import readonly_snapshot
+from .monitor import running as monitor_running
 from .schema import available, has_availability
 from .store import TeamError
 from .availability import member_progress
@@ -33,12 +35,70 @@ def _schema(db):
         )
 
 
+def _monitor_summary(state, db, team_id=None):
+    active = monitor_running(Path(state).expanduser().resolve())
+    if db is None:
+        return {
+            "running": active,
+            "active_codex": 0,
+            "pending_codex": 0,
+            "all_active_codex": 0,
+            "all_pending_codex": 0,
+        }
+    all_active = db.execute(
+        """SELECT count(DISTINCT pm.member_id) FROM peer_members pm
+        JOIN peer_teams t ON t.id=pm.team_id JOIN members m ON m.id=pm.member_id
+        WHERE t.state='active' AND pm.state='active' AND m.provider='codex'"""
+    ).fetchone()[0]
+    all_pending = db.execute(
+        """SELECT count(*) FROM peer_deliveries d
+        JOIN peer_messages msg ON msg.id=d.message_id
+        JOIN peer_members pm ON pm.team_id=msg.team_id AND pm.member_id=d.recipient
+        JOIN peer_teams t ON t.id=msg.team_id
+        JOIN members m ON m.id=d.recipient
+        WHERE m.provider='codex' AND pm.state='active'
+        AND (t.state='active' OR msg.kind='lifecycle')
+        AND d.received_at IS NULL AND d.state='pending'"""
+    ).fetchone()[0]
+    if team_id is None:
+        team_active, team_pending = all_active, all_pending
+    else:
+        team_active = db.execute(
+            """SELECT count(*) FROM peer_members pm
+            JOIN peer_teams t ON t.id=pm.team_id JOIN members m ON m.id=pm.member_id
+            WHERE t.id=? AND t.state='active' AND pm.state='active' AND m.provider='codex'""",
+            (team_id,),
+        ).fetchone()[0]
+        team_pending = db.execute(
+            """SELECT count(*) FROM peer_deliveries d
+            JOIN peer_messages msg ON msg.id=d.message_id
+            JOIN peer_members pm ON pm.team_id=msg.team_id AND pm.member_id=d.recipient
+            JOIN peer_teams t ON t.id=msg.team_id
+            JOIN members m ON m.id=d.recipient
+            WHERE t.id=? AND m.provider='codex' AND pm.state='active'
+            AND (t.state='active' OR msg.kind='lifecycle')
+            AND d.received_at IS NULL AND d.state='pending'""",
+            (team_id,),
+        ).fetchone()[0]
+    return {
+        "running": active,
+        "active_codex": team_active,
+        "pending_codex": team_pending,
+        "all_active_codex": all_active,
+        "all_pending_codex": all_pending,
+    }
+
+
 def directory(state):
     with readonly_snapshot(state) as db:
         _schema(db)
         stamp = time.time()
         if db is None:
-            return {"teams": [], "read_at": stamp}
+            return {
+                "teams": [],
+                "read_at": stamp,
+                "monitor": _monitor_summary(state, None),
+            }
         cooldowns = "0"
         args = ()
         if has_availability(db):
@@ -79,7 +139,11 @@ def directory(state):
             if item["state"] in {"done", "cancelled"}:
                 item["attention"].pop("cooldowns")
             rows.append(item)
-        return {"teams": rows, "read_at": stamp}
+        return {
+            "teams": rows,
+            "read_at": stamp,
+            "monitor": _monitor_summary(state, db),
+        }
 
 
 def _team(db, identity):
@@ -267,6 +331,7 @@ def team_detail(state, identity):
             db, identity, result["tasks"], result["decisions"]
         )
         result["read_at"] = stamp
+        result["monitor"] = _monitor_summary(state, db, identity)
         if result["state"] not in {"done", "cancelled"}:
             collector = collector_status(state)
             account = shared_claude_account(state, db, now=stamp, team_id=identity)

@@ -12,7 +12,7 @@ class Outbox:
         self.store, self.state = store, store.state
 
     def recipients(self):
-        with self.store.transaction() as db:
+        with self.store.readonly() as db:
             result = {
                 r[0]
                 for r in db.execute(
@@ -32,11 +32,41 @@ class Outbox:
         self.store.watch_work(actor)
 
     def reserve_notice(self, actor):
-        with self.store.transaction() as db:
+        with self.store.readonly() as db:
             modern = available(db)
             availability = read_availability(db, actor)
             if availability["held"]:
                 return None
+            if modern:
+                legacy_states = [
+                    row[0]
+                    for row in db.execute(
+                        "SELECT n.state FROM notices n JOIN work w ON w.id=n.work_id WHERE n.recipient=? AND n.received_at IS NULL AND w.state='active' AND n.state IN ('pending','sending','queued','queued_warning','uncertain')",
+                        (actor,),
+                    )
+                ]
+                peer_rows = db.execute(
+                    "SELECT d.state,msg.kind FROM peer_deliveries d JOIN peer_messages msg ON msg.id=d.message_id JOIN peer_members p ON p.team_id=msg.team_id AND p.member_id=d.recipient JOIN peer_teams t ON t.id=msg.team_id WHERE d.recipient=? AND d.received_at IS NULL AND p.state='active' AND (t.state='active' OR msg.kind='lifecycle') AND d.state IN ('pending','sending','queued','queued_warning','uncertain')",
+                    (actor,),
+                ).fetchall()
+                if not legacy_states and not peer_rows:
+                    return None
+                if any(s != "pending" for s in legacy_states) or any(
+                    r["state"] != "pending" for r in peer_rows
+                ):
+                    return None
+                if (
+                    availability["posture"] == "conserve"
+                    and not legacy_states
+                    and not any(r["kind"] != "milestone" for r in peer_rows)
+                ):
+                    return None
+            else:
+                if not db.execute(
+                    "SELECT 1 FROM notices n JOIN work w ON w.id=n.work_id WHERE n.recipient=? AND n.state='pending' AND n.received_at IS NULL AND w.state='active' LIMIT 1",
+                    (actor,),
+                ).fetchone():
+                    return None
         if not modern:
             return self.store.reserve_notice(actor)
         with self.store.transaction() as db:

@@ -1,11 +1,13 @@
 """Keep durable native Codex wake-up independent of MCP connection lifetime."""
 
+import logging
+import os
 import signal
 import threading
 import time
 
 from .file_locks import acquire_exclusive_nowait
-from .notifications import Dispatcher
+from .notifications import Dispatcher, is_transient_sqlite_lock
 from .outbox import Outbox
 from .store import Store, TeamError
 from .quota_collector import QuotaCollector
@@ -15,12 +17,16 @@ def running(state):
     path = state / "monitor.lock"
     if not path.exists():
         return False
-    with path.open("r") as lock:
-        try:
-            acquire_exclusive_nowait(lock)
-            return False
-        except BlockingIOError:
-            return True
+    mode = "r+b" if os.name == "nt" else "r"
+    try:
+        with path.open(mode) as lock:
+            try:
+                acquire_exclusive_nowait(lock)
+                return False
+            except BlockingIOError:
+                return True
+    except OSError:
+        return None
 
 
 def serve(state, executable):
@@ -40,12 +46,25 @@ def serve(state, executable):
             signal.signal(signum, lambda *_: stopping.set())
         try:
             quota.start()
+            lock_failures = 0
             while not stopping.is_set():
                 if any(not thread.is_alive() for thread in quota.threads):
                     raise TeamError(
                         "A native quota worker stopped; inspect service diagnostics"
                     )
-                active = outbox.recipients()
+                try:
+                    active = outbox.recipients()
+                    lock_failures = 0
+                except Exception as error:
+                    if is_transient_sqlite_lock(error) and lock_failures < 10:
+                        lock_failures += 1
+                        logging.warning(
+                            "Native Team monitor retrying recipient scan after transient SQLite lock (%d/10)",
+                            lock_failures,
+                        )
+                        stopping.wait(min(2 ** min(lock_failures - 1, 3), 10))
+                        continue
+                    raise
                 for actor in active:
                     if actor not in workers:
                         workers[actor] = Dispatcher(outbox, actor, executable)

@@ -447,3 +447,8 @@ button:disabled { opacity: .65; }
 .change-manifest label { cursor: pointer; }
 .change-manifest label:has(input:checked) { opacity: .75; }
 .change-manifest input { vertical-align: middle; }
+.monitor-alert { margin-bottom: 16px; padding: 12px 16px; border-radius: 10px; border: 1px solid #d9826c; background: #fdf1ee; color: #8c2d19; }
+.monitor-alert strong { display: block; font-size: .9375rem; margin-bottom: 4px; }
+.monitor-alert p { margin: 0; font-size: .875rem; line-height: 1.5; }
+.monitor-alert code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .8125rem; }
+:root[data-theme="dark"] .monitor-alert { background: #3b201c; border-color: #9b4b3c; color: #f6b5a5; }

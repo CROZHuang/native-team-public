@@ -238,6 +238,17 @@
     if (focusedTeam) $(`[data-team="${CSS.escape(focusedTeam)}"]`)?.focus();
   }
 
+  function monitorAlert(item) {
+    const monitor = item?.monitor;
+    if (!source.live || monitor?.running !== false) return "";
+    if (!monitor.all_active_codex && !monitor.all_pending_codex) return "";
+    const parts = [];
+    if (monitor.pending_codex > 0) parts.push(`当前团队积压 ${monitor.pending_codex} 条待发送的 Codex 唤醒`);
+    if (monitor.all_pending_codex > monitor.pending_codex) parts.push(`全部项目共积压 ${monitor.all_pending_codex} 条`);
+    const summary = parts.length ? `${parts.join("，")}，任务与消息不会自动唤醒 Codex。` : "活跃 Codex 成员当前不会收到任务或消息自动唤醒。";
+    return `<div class="monitor-alert" role="alert"><strong>Codex 通知服务未运行</strong><p>${esc(summary)} 请检查或启动本机通知服务（<code>native-team monitor</code>；Linux 服务：<code>systemctl --user status native-team-monitor</code>）。</p></div>`;
+  }
+
   function renderHeader() {
     const item = team();
     if (!item) {
@@ -249,6 +260,7 @@
     const active = item.members.filter((member) => member.state === "active").length;
     $("#breadcrumb-name").textContent = item.name;
     $("#team-header").innerHTML = `
+      ${monitorAlert(item)}
       <div class="team-heading"><h1 id="team-title">${esc(item.name)}</h1>${badge(teamStates[item.state] || item.state, item.state)}</div>
       <p class="team-purpose">${esc(item.purpose || "尚未记录团队目标")}</p>
       <div class="team-meta"><span>${esc(item.projectPath)}</span><span>${item.members.length} 位成员${item.state === "active" ? (active < item.members.length ? ` · ${item.members.length - active} 位已停用` : " · 均已登记") : " · 保留协作记录"}</span><span class="readonly-label">只读视图</span></div>`;
@@ -491,7 +503,8 @@
         const amount = claude && window.remaining == null ? "未提供" : window.disabled ? "未启用" : window.stale ? "待刷新" : window.remaining != null ? `${Number(window.remaining.toFixed(1))}%` : window.amount != null ? `${window.amount}（单位未提供）` : "未知";
         return `<div class="quota-window ${!window.disabled && !window.stale && window.remaining === 0 ? "quota-exhausted" : ""}"><div><strong>${esc(label)}</strong><span>${claude ? "订阅额度剩余" : window.applies ? "用于当前模型" : "其他额度窗口"}</span></div><strong class="quota-amount">${esc(amount)}</strong><p>预计重置：${window.resets_at == null ? "未提供" : esc(source.date(window.resets_at))}</p>${window.names.length ? `<p class="view-note">${window.observed == null ? "" : `观测于 ${esc(source.date(window.observed))}<br>`}来源成员：${esc(window.names.join("、"))}</p>` : ""}</div>`;
       }).join("") || '<p class="muted">原生客户端尚未提供额度窗口。</p>'}</div></section>`).join("");
-    return `<div class="section-heading panel-intro"><div><h2>账户与额度</h2><p>登录由原生客户端管理。这里自动接收额度状态，无需模型主动上报。</p></div>${badge(collector.enabled ? "自动采集已启用" : "自动采集未启用", collector.enabled ? "active" : "paused")}</div>
+    const monitorBadge = item.monitor?.running === false ? badge("通知服务未运行", "blocked") : item.monitor?.running === true ? badge("通知服务运行中", "active") : "";
+    return `<div class="section-heading panel-intro"><div><h2>账户与额度</h2><p>登录由原生客户端管理。这里自动接收额度状态，无需模型主动上报。</p></div><div>${monitorBadge} ${badge(collector.enabled ? "自动采集已启用" : "自动采集未启用", collector.enabled ? "active" : "paused")}</div></div>
       <div class="quota-source-status">${Object.entries({ codex: "Codex", agy: "agy", claude: "Claude Code" }).map(([provider, label]) => { const value = collector[provider]; return `<p><strong>${label}</strong><span>${esc(value?.detail || "等待首次原生数据")}</span>${value?.checked_at ? `<small>检查于 ${esc(source.date(value.checked_at))}</small>` : ""}</p>`; }).join("")}</div>
       <p class="view-note">同一账户由多个窗口共享，数字不能相加。灰色“待刷新”表示当前余额未知；重置时间经过不会自动解除冷却。</p>
       <div class="quota-account-grid">${cards}</div>
