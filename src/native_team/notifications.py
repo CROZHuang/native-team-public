@@ -65,6 +65,8 @@ class Dispatcher:
     def __init__(self, store, actor, executable):
         self.store, self.actor, self.executable = store, actor, Path(executable)
         self.stopping = threading.Event()
+        # Exception class only (no message text) when the worker stops on an error.
+        self.failure = None
         self.thread = threading.Thread(target=self.run, daemon=True)
 
     def start(self):
@@ -101,6 +103,7 @@ class Dispatcher:
                         )
                         self.stopping.wait(min(2 ** min(lock_failures - 1, 3), 10))
                         continue
+                    self.failure = type(error).__name__
                     logging.exception(
                         "Native Team dispatcher stopped during recovery; inspect local state"
                     )
@@ -129,6 +132,7 @@ class Dispatcher:
                         )
                         self.stopping.wait(min(2 ** min(lock_failures - 1, 3), 10))
                         continue
+                    self.failure = type(error).__name__
                     # No private messages or provider stdout/stderr enter logs.
                     logging.exception(
                         "Native Team dispatcher stopped after an internal error; inspect local state"

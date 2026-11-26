@@ -10,10 +10,11 @@ from .store import CLIENT_PROVIDERS, Store, TeamError
 
 def _monitor_warning(state):
     from .inspection import readonly_snapshot
-    from .monitor import running
+    from .monitor import summary
     from .schema import available
 
-    if running(state) is not False:
+    service = summary(state)
+    if service["status"] not in {"stopped", "unresponsive", "degraded"}:
         return None
     with readonly_snapshot(state) as db:
         if db is None or not available(db):
@@ -45,6 +46,18 @@ def _monitor_warning(state):
         if sys.platform == "linux"
         else "Start the monitor with: native-team monitor"
     )
+    if service["status"] == "unresponsive":
+        return (
+            "WARNING: Codex notification monitor holds its lock but its heartbeat stopped "
+            f"{service['heartbeat_age']}s ago{backlog}; it may be hung. {hint}"
+        )
+    if service["status"] == "degraded":
+        return (
+            f"WARNING: Codex notification monitor is degraded{backlog}: "
+            f"{service['backoff']} notification worker(s) are restarting with backoff "
+            "or its recipient scan is retrying a database lock. "
+            "Other recipients keep being served."
+        )
     return (
         f"WARNING: Codex notification monitor is NOT running{backlog}; "
         f"Codex sessions will not wake automatically. {hint}"
@@ -263,6 +276,13 @@ def main():
                     shared_members = {
                         (shared["project"], alias) for alias in shared["members"]
                     }
+                    if shared["project"] is None:
+                        # Machine-wide group: every listed Claude lane, in any project.
+                        shared_members = {
+                            (member["project"], member["alias"])
+                            for member in value["members"]
+                            if member["alias"] in shared["members"]
+                        }
                 for member in value["members"]:
                     data = member["native_quota"]
                     availability = member["availability"]
@@ -512,22 +532,25 @@ def main():
                 return
             store = Store(args.state)
             report = store.inspect(args.project)
-            from .monitor import running
+            from .monitor import summary
             from .peers import PeerStore
 
-            report["monitor_active"] = running(args.state)
+            service = summary(args.state)
+            report["monitor_active"] = service["running"]
+            report["monitor_status"] = service["status"]
             report["teams"] = PeerStore(store).inspect(args.project)
             if args.json:
                 print(json.dumps(report, ensure_ascii=False, indent=2))
                 return
             print(f"Native Team · {report['project']}")
-            monitor_label = (
-                "active"
-                if report["monitor_active"] is True
-                else "not running"
-                if report["monitor_active"] is False
-                else "unknown"
-            )
+            monitor_label = {
+                "running": "active",
+                "stopped": "not running",
+                "unresponsive": f"unresponsive (no heartbeat for {service['heartbeat_age']}s)",
+                "degraded": f"degraded ({service['backoff']} worker(s) restarting)"
+                if service["backoff"]
+                else "degraded (retrying a database lock)",
+            }.get(service["status"], "unknown")
             print("  Notification monitor: " + monitor_label)
             warning = _monitor_warning(args.state)
             if warning:

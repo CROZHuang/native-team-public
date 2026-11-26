@@ -26,6 +26,7 @@ PORTABLE_TESTS = (
     "test_peer_mcp",
     "test_claude",
     "test_workbench",
+    "test_monitor_portable",
 )
 
 

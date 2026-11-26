@@ -76,7 +76,137 @@ def source_view(row, *, now):
     }
 
 
-def native_member_view(db, member_id, *, now):
+def _state_dir(db):
+    """The state directory of this ledger connection, if it is file-backed."""
+    for row in db.execute("PRAGMA database_list"):
+        if row[1] == "main" and row[2]:
+            return Path(row[2]).parent
+    return None
+
+
+def parse_shared_claude(state):
+    """Parse claude-shared-account.json once for every caller.
+
+    Returns None (absent), "invalid", ("machine",) or ("team", team_id, aliases).
+    """
+    if state is None:
+        return None
+    try:
+        spec = read_private_metadata(Path(state) / "quota/claude-shared-account.json", 4096)
+    except FileNotFoundError:
+        return None
+    except (OSError, ValueError):
+        return "invalid"
+    if isinstance(spec, dict) and spec.get("scope") == "machine":
+        return ("machine",)
+    aliases = spec.get("aliases") if isinstance(spec, dict) else None
+    if (
+        isinstance(spec, dict)
+        and isinstance(spec.get("team_id"), str)
+        and isinstance(aliases, list)
+        and 1 <= len(aliases) <= len(CLAUDE_ALIASES)
+        and all(alias in CLAUDE_ALIASES for alias in aliases)
+        and len(set(aliases)) == len(aliases)
+    ):
+        return ("team", spec["team_id"], tuple(aliases))
+    return "invalid"
+
+
+def _account_peers(db, row, state):
+    """Other enrolled sources reporting the same account as this member's source.
+
+    Codex and agy prove their account with a verified account key. Claude's
+    statusline carries no account identity, so only the owner-confirmed group
+    counts (a whole-machine scope covers lanes enrolled later, too).
+    """
+    if row["association"] != "verified":
+        return []
+    if row["provider"] in {"agy", "codex"}:
+        if not row["account_key"]:
+            return []
+        return db.execute(
+            """SELECT s.*,n.alias FROM native_quota_sources s JOIN members n ON n.id=s.member_id
+               WHERE s.provider=? AND s.account_key=? AND s.association='verified' AND s.member_id<>?""",
+            (row["provider"], row["account_key"], row["member_id"]),
+        ).fetchall()
+    if row["provider"] != "claude":
+        return []
+    spec = parse_shared_claude(state)
+    if not isinstance(spec, tuple):
+        return []
+    if spec[0] == "machine":
+        candidates = db.execute(
+            """SELECT s.*,n.alias FROM native_quota_sources s JOIN members n ON n.id=s.member_id
+               WHERE s.provider='claude' AND s.association='verified' AND s.member_id<>?""",
+            (row["member_id"],),
+        ).fetchall()
+    else:
+        # A team-scoped confirmation shares only among that live team's active listed lanes.
+        _, team_id, aliases = spec
+        marks = ",".join("?" for _ in aliases)
+        members = f"""SELECT p.member_id FROM peer_members p JOIN peer_teams t ON t.id=p.team_id
+            JOIN members n ON n.id=p.member_id
+            WHERE t.id=? AND t.state IN ('active','paused') AND p.state='active'
+            AND n.provider='claude' AND n.alias IN ({marks})"""
+        if not db.execute(members + " AND p.member_id=?", (team_id, *aliases, row["member_id"])).fetchone():
+            return []
+        candidates = db.execute(
+            f"""SELECT s.*,n.alias FROM native_quota_sources s JOIN members n ON n.id=s.member_id
+               WHERE s.provider='claude' AND s.association='verified' AND s.member_id<>?
+               AND s.member_id IN ({members})""",
+            (row["member_id"], team_id, *aliases),
+        ).fetchall()
+    return [
+        peer
+        for peer in candidates
+        if db.execute(CLAUDE_TARGETS + " AND m.id=?", (peer["member_id"],)).fetchone()
+    ]
+
+
+def _fill_from_account(view, peers, now):
+    """Replace this member's stale windows with the freshest same-account reading.
+
+    Quota is per account, not per session: an idle session's own statusline stops
+    refreshing while another session on the same account keeps reporting.
+    """
+    best = {}
+    for peer in peers:
+        try:
+            other = source_view(peer, now=now)
+        except (ValueError, KeyError, TypeError):
+            continue
+        for window in other["windows"]:
+            if (
+                window["stale"]
+                or window.get("disabled")
+                or (window.get("remaining") is None and window.get("amount") is None)
+            ):
+                continue
+            observed = window.get("observed_at", other["observed_at"])
+            if window["bucket"] not in best or observed > best[window["bucket"]][0]:
+                best[window["bucket"]] = (observed, window, peer["alias"])
+    filled = False
+    for index, window in enumerate(view["windows"]):
+        found = best.get(window["bucket"]) if window["stale"] else None
+        if found is None:
+            continue
+        observed, other, alias = found
+        borrowed = {**window, "observed_at": observed, "stale": False, "shared_from": alias}
+        for key in ("remaining", "amount", "resets_at", "disabled"):
+            # Never keep this member's own stale value beside the borrowed reading.
+            if key in other:
+                borrowed[key] = other[key]
+            else:
+                borrowed.pop(key, None)
+        view["windows"][index] = borrowed
+        filled = True
+    if filled:
+        applicable = [w for w in view["windows"] if w.get("applies", True)]
+        view["stale"] = bool(applicable) and all(w["stale"] for w in applicable)
+        view["shared_account"] = True
+
+
+def native_member_view(db, member_id, *, now, state=None):
     if not has_native_quota(db):
         return None
     row = db.execute(
@@ -90,6 +220,9 @@ def native_member_view(db, member_id, *, now):
     ):
         return None
     view = source_view(row, now=now)
+    peers = _account_peers(db, row, _state_dir(db) if state is None else state)
+    if peers:
+        _fill_from_account(view, peers, now)
     view.pop("account_key")
     policy = db.execute(
         "SELECT posture,reason,resets_at,updated FROM native_quota_policy WHERE member_id=?",
@@ -100,44 +233,63 @@ def native_member_view(db, member_id, *, now):
 
 
 def shared_claude_account(state, db, *, now, team_id=None):
-    """An owner-confirmed display group. Native account identity and policy remain per source."""
-    try:
-        spec = read_private_metadata(
-            Path(state) / "quota/claude-shared-account.json", 4096
-        )
-        aliases = spec["aliases"]
-        if (
-            not isinstance(spec["team_id"], str)
-            or not isinstance(aliases, list)
-            or not 1 <= len(aliases) <= len(CLAUDE_ALIASES)
-            or any(alias not in CLAUDE_ALIASES for alias in aliases)
-            or len(set(aliases)) != len(aliases)
-        ):
-            raise ValueError
-    except FileNotFoundError:
+    """An owner-confirmed display group. Native account identity and policy remain per source.
+
+    {"scope": "machine"} covers every enrolled Claude lane on this machine, so new
+    lanes need no configuration; {"team_id", "aliases"} keeps the older team list.
+    """
+    spec = parse_shared_claude(state)
+    if spec is None:
         return None
-    except (OSError, ValueError, KeyError, TypeError):
+    if spec == "invalid":
         return {"error": "本机 Claude 共享账号配置无效；请核对团队 ID 和成员别名。"}
-    if team_id is not None and team_id != spec["team_id"]:
+    aliases = None if spec[0] == "machine" else list(spec[2])
+    if aliases is None:
+        if team_id is None:
+            team = {"id": None, "name": "本机全部 Claude 通道", "project": None}
+            rows = db.execute(
+                """SELECT DISTINCT n.id,n.alias FROM peer_members p JOIN peer_teams t ON t.id=p.team_id
+                   JOIN members n ON n.id=p.member_id
+                   WHERE t.state IN ('active','paused') AND p.state='active' AND n.provider='claude' ORDER BY n.alias"""
+            ).fetchall()
+        else:
+            team = db.execute(
+                "SELECT id,name,project FROM peer_teams WHERE id=? AND state IN ('active','paused')",
+                (team_id,),
+            ).fetchone()
+            if team is None:
+                return None
+            rows = db.execute(
+                """SELECT n.id,n.alias FROM peer_members p JOIN members n ON n.id=p.member_id
+                   WHERE p.team_id=? AND p.state='active' AND n.provider='claude' ORDER BY n.alias""",
+                (team_id,),
+            ).fetchall()
+        return _claude_group_windows(db, team, rows, None, now, state)
+    if team_id is not None and team_id != spec[1]:
         return None
     team = db.execute(
         "SELECT id,name,project FROM peer_teams WHERE id=? AND state IN ('active','paused')",
-        (spec["team_id"],),
+        (spec[1],),
     ).fetchone()
     if team is None:
         return None
-    members = []
-    samples = {bucket: [] for bucket in CLAUDE_WINDOWS}
-    for member in db.execute(
+    rows = db.execute(
         """SELECT n.id,n.alias FROM peer_members p JOIN members n ON n.id=p.member_id
            WHERE p.team_id=? AND p.state='active' AND n.provider='claude' ORDER BY n.alias""",
         (team["id"],),
-    ):
+    ).fetchall()
+    return _claude_group_windows(db, team, rows, set(aliases), now, state)
+
+
+def _claude_group_windows(db, team, rows, aliases, now, state):
+    members = []
+    samples = {bucket: [] for bucket in CLAUDE_WINDOWS}
+    for member in rows:
         alias = member["alias"]
-        if alias not in aliases:
+        if aliases is not None and alias not in aliases:
             continue
         members.append(alias)
-        data = native_member_view(db, member["id"], now=now)
+        data = native_member_view(db, member["id"], now=now, state=state)
         if data and data["association"] == "verified":
             for window in data["windows"]:
                 if window.get("observed_at") is not None:
@@ -150,10 +302,13 @@ def shared_claude_account(state, db, *, now, team_id=None):
         windows.append(
             max(
                 candidates,
+                # A borrowed copy carries its source's timestamp; on a tie the
+                # member that actually observed the reading is the source.
                 key=lambda w: (
                     not w["stale"],
                     w["remaining"] is not None,
                     w["observed_at"],
+                    "shared_from" not in w,
                 ),
                 default={
                     "bucket": bucket,

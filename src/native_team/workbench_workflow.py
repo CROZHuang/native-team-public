@@ -5,6 +5,11 @@ import json
 TASK_LIMIT = 30
 DECISION_LIMIT = 20
 EVENT_LIMIT = 200
+MESSAGE_LIMIT = 100
+# Peer prose kinds shown as collaboration; system notices (membership, quota,
+# lifecycle, decision) stay out. Only addressed kinds become graph edges.
+MESSAGE_KINDS = ("handoff", "direct", "blocker", "user_instruction")
+EDGE_KINDS = ("handoff", "direct")
 TASK_STATES = {"ready", "working", "review", "accepted", "blocked", "cancelled"}
 
 
@@ -104,18 +109,84 @@ def workflow_history(db, team_id, tasks, decisions):
                     "revision": int(revision),
                 }
             )
+    messages, more_messages = message_history(db, team_id)
+    truncated |= more_messages
+    for message in messages:
+        recipients = message["recipients"]
+        received = sum(r["received"] for r in recipients)
+        events.append(
+            {
+                "id": f"message:{message['seq']}",
+                "target_type": "message",
+                "target_id": message["id"],
+                "kind": message["kind"],
+                "state": "received"
+                if recipients and received == len(recipients)
+                else "sent",
+                "actor": message["sender"],
+                "at": message["at"],
+                "revision": message["seq"],
+                "seq": message["seq"],
+                "recipients": recipients,
+            }
+        )
     events.sort(key=lambda e: (e["at"], e["target_id"], e["revision"]))
     truncated |= len(events) > EVENT_LIMIT
     return {
         "task_ids": task_ids,
         "decision_ids": decision_ids,
+        "messages": messages,
         "events": events[-EVENT_LIMIT:],
         "truncated": truncated,
         "invalid_records": invalid,
         "limits": {
             "tasks": TASK_LIMIT,
             "decisions": DECISION_LIMIT,
+            "messages": MESSAGE_LIMIT,
             "events": EVENT_LIMIT,
         },
-        "scope": "Selected tasks' recorded revisions and retained decision proposals/outcomes; not a complete decision audit log.",
+        "scope": "Selected tasks' recorded revisions, retained decision proposals/outcomes, and the latest handoff, direct, blocker and user-instruction messages (metadata and delivery receipt only); not a complete audit log.",
     }
+
+
+def message_history(db, team_id):
+    """Latest peer messages with their actual team-scoped delivery recipients.
+
+    Metadata only: the body stays in the activity record, which the chart links to.
+    """
+    placeholders = ",".join("?" for _ in MESSAGE_KINDS)
+    rows = db.execute(
+        f"""SELECT m.id,m.seq,m.kind,m.created,n.alias AS sender
+        FROM peer_messages m JOIN members n ON n.id=m.sender
+        WHERE m.team_id=? AND m.kind IN ({placeholders})
+        ORDER BY m.seq DESC LIMIT ?""",
+        (team_id, *MESSAGE_KINDS, MESSAGE_LIMIT + 1),
+    ).fetchall()
+    more = len(rows) > MESSAGE_LIMIT
+    rows = rows[:MESSAGE_LIMIT]
+    recipients = {row["id"]: [] for row in rows}
+    if rows:
+        marks = ",".join("?" for _ in rows)
+        for delivery in db.execute(
+            f"""SELECT d.message_id,r.alias,d.received_at IS NOT NULL AS received
+            FROM peer_deliveries d JOIN peer_messages m ON m.id=d.message_id
+            JOIN members r ON r.id=d.recipient
+            WHERE m.team_id=? AND d.message_id IN ({marks}) ORDER BY r.alias""",
+            (team_id, *recipients),
+        ):
+            recipients[delivery["message_id"]].append(
+                {"alias": delivery["alias"], "received": bool(delivery["received"])}
+            )
+    messages = [
+        {
+            "id": row["id"],
+            "seq": row["seq"],
+            "kind": row["kind"],
+            "sender": row["sender"],
+            "at": row["created"],
+            "recipients": recipients[row["id"]],
+            "edge": row["kind"] in EDGE_KINDS,
+        }
+        for row in reversed(rows)
+    ]
+    return messages, more

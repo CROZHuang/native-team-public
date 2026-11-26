@@ -116,6 +116,17 @@
       if (!live) return { ...structuredClone((await demoData()).find((item) => item.id === id)), loaded: true };
       return normalize(await json(`/api/teams/${encodeURIComponent(id)}`, signal));
     },
+    async message(item, seq, signal) {
+      // Read one older message by sequence through the existing activity page API.
+      if (!live || !Number.isInteger(seq) || seq < 1) return null;
+      const result = await json(`/api/teams/${encodeURIComponent(item.id)}/activity?cursor=${encodeURIComponent(String(seq + 1))}`, signal);
+      if (signal?.aborted) throw new DOMException("Cancelled", "AbortError");
+      const raw = result.items.find((entry) => entry.seq === seq);
+      if (!raw) return null;
+      const found = event(raw);
+      (item.activityExtra ||= {})[found.id] = found;
+      return found;
+    },
     async more(item, section, signal) {
       const cursor = item.pages?.[section]?.next;
       if (!live || cursor == null) return item;

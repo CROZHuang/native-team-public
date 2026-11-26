@@ -8,7 +8,7 @@ import time
 from .change_manifest import latest
 from . import checkouts
 from .inspection import readonly_snapshot
-from .monitor import running as monitor_running
+from .monitor import summary as monitor_summary
 from .schema import available, has_availability
 from .store import TeamError
 from .availability import member_progress
@@ -36,10 +36,10 @@ def _schema(db):
 
 
 def _monitor_summary(state, db, team_id=None):
-    active = monitor_running(Path(state).expanduser().resolve())
+    service = monitor_summary(Path(state).expanduser().resolve())
     if db is None:
         return {
-            "running": active,
+            **service,
             "active_codex": 0,
             "pending_codex": 0,
             "all_active_codex": 0,
@@ -81,7 +81,7 @@ def _monitor_summary(state, db, team_id=None):
             (team_id,),
         ).fetchone()[0]
     return {
-        "running": active,
+        **service,
         "active_codex": team_active,
         "pending_codex": team_pending,
         "all_active_codex": all_active,

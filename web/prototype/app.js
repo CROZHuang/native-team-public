@@ -76,7 +76,15 @@
   let controller;
   let pageVersion = 0;
   let pageController;
+  let detailVersion = 0;
+  let detailController;
   let handledRoute = location.hash;
+
+  function cancelDetail() {
+    detailVersion += 1;
+    detailController?.abort();
+    detailController = null;
+  }
 
   function cancelPagination() {
     pageVersion += 1;
@@ -87,6 +95,7 @@
   async function refreshRecords(refreshDirectory = true, background = false) {
     if (state.loading || (background && refreshPause())) return;
     cancelPagination();
+    if (!background) cancelDetail();
     const version = ++requestVersion;
     controller?.abort();
     controller = new AbortController();
@@ -192,7 +201,7 @@
   function navigate(teamId, tab, updateHistory = true) {
     const teamChanged = state.teamId !== teamId;
     if ($("#detail-dialog").open) $("#detail-dialog").close();
-    if (state.teamId !== teamId || state.tab !== tab) cancelPagination();
+    if (state.teamId !== teamId || state.tab !== tab) { cancelPagination(); cancelDetail(); }
     if (state.teamId !== teamId) {
       controller?.abort();
       requestVersion += 1;
@@ -240,8 +249,15 @@
 
   function monitorAlert(item) {
     const monitor = item?.monitor;
-    if (!source.live || monitor?.running !== false) return "";
+    if (!source.live || !monitor) return "";
     if (!monitor.all_active_codex && !monitor.all_pending_codex) return "";
+    if (monitor.running === true && monitor.status === "unresponsive") {
+      return `<div class="monitor-alert" role="alert"><strong>Codex 通知服务无响应</strong><p>服务仍占用运行锁，但已 ${esc(String(monitor.heartbeat_age ?? "?"))} 秒没有心跳，可能已卡住。请检查或重启本机通知服务（<code>native-team monitor</code>；Linux 服务：<code>systemctl --user status native-team-monitor</code>）。</p></div>`;
+    }
+    if (monitor.running === true && monitor.status === "degraded") {
+      return `<div class="monitor-alert monitor-degraded" role="status"><strong>Codex 通知服务部分降级</strong><p>${monitor.backoff ? `${esc(String(monitor.backoff))} 位成员的唤醒线程正在退避重启；` : ""}其他成员照常送达。服务会自动恢复，无需立即处理。</p></div>`;
+    }
+    if (monitor.running !== false) return "";
     const parts = [];
     if (monitor.pending_codex > 0) parts.push(`当前团队积压 ${monitor.pending_codex} 条待发送的 Codex 唤醒`);
     if (monitor.all_pending_codex > monitor.pending_codex) parts.push(`全部项目共积压 ${monitor.all_pending_codex} 条`);
@@ -454,6 +470,7 @@
     const collector = item.quota_collector || {};
     const groups = new Map();
     const missing = [];
+    const borrowed = [];
     const shared = collector.claude?.shared_account;
     function claudeWindowStale(window) {
       if (!window || window.applies !== false) return Boolean(window?.stale);
@@ -485,6 +502,7 @@
       const group = groups.get(key);
       group.members.push(member);
       for (const window of value.windows) {
+        if (window.shared_from) { borrowed.push([group, member, window]); continue; }
         const stale = member.provider === "claude" ? claudeWindowStale(window) : window.stale;
         const key = JSON.stringify([window.bucket, window.remaining, window.amount, window.resets_at, window.disabled, stale]);
         const observed = window.observed_at ?? (member.provider === "claude" ? null : value.observed_at);
@@ -495,15 +513,26 @@
         row.applies ||= window.applies;
       }
     }
+    // An idle member's borrowed reading only shows when no member of the same card
+    // observed that window itself; the idle member stays listed on the card.
+    for (const [group, member, window] of borrowed) {
+      if ([...group.windows.values()].some((row) => row.bucket === window.bucket && !row.shared_from)) continue;
+      const stale = member.provider === "claude" ? claudeWindowStale(window) : window.stale;
+      const key = JSON.stringify([window.bucket, window.remaining, window.amount, window.resets_at, window.disabled, stale, window.shared_from]);
+      if (!group.windows.has(key)) group.windows.set(key, { ...window, stale, names: [], observed: window.observed_at ?? null, applies: false });
+      const row = group.windows.get(key);
+      row.names.push(member.id);
+      row.applies ||= window.applies;
+    }
     const cards = [...groups.values()].map((group) => `<section class="quota-account-card"><div class="section-heading"><div><span class="eyebrow">${esc(group.provider)}</span><h3>${esc(group.account)}</h3></div><span class="section-meta">${group.members.length} 个已关联成员</span></div>
       ${group.shared ? `<div class="memory-report-links">${group.members.map((m) => detailButton("member", m.id, m.id + (m.availability?.held ? "（冷却中）" : ""), "outline-button")).join("")}</div>` : `<div class="quota-members">${group.members.map((member) => `<div>${detailButton("member", member.id, member.id)}<span>${esc(member.native_quota.model || "模型未提供")}</span><p>${esc(availabilityLabel(member) || "等待额度判断")}</p>${member.native_quota.association !== "verified" ? '<p class="quota-warning">原生会话已变化，关联待重新确认。</p>' : ""}</div>`).join("")}</div>`}
       <div class="quota-windows">${[...group.windows.values()].map((window) => {
         const claude = group.provider === "claude";
         const label = claude ? ({ five_hour: "5 小时", seven_day: "7 天" }[window.bucket] || window.bucket) : window.bucket;
         const amount = claude && window.remaining == null ? "未提供" : window.disabled ? "未启用" : window.stale ? "待刷新" : window.remaining != null ? `${Number(window.remaining.toFixed(1))}%` : window.amount != null ? `${window.amount}（单位未提供）` : "未知";
-        return `<div class="quota-window ${!window.disabled && !window.stale && window.remaining === 0 ? "quota-exhausted" : ""}"><div><strong>${esc(label)}</strong><span>${claude ? "订阅额度剩余" : window.applies ? "用于当前模型" : "其他额度窗口"}</span></div><strong class="quota-amount">${esc(amount)}</strong><p>预计重置：${window.resets_at == null ? "未提供" : esc(source.date(window.resets_at))}</p>${window.names.length ? `<p class="view-note">${window.observed == null ? "" : `观测于 ${esc(source.date(window.observed))}<br>`}来源成员：${esc(window.names.join("、"))}</p>` : ""}</div>`;
+        return `<div class="quota-window ${!window.disabled && !window.stale && window.remaining === 0 ? "quota-exhausted" : ""}"><div><strong>${esc(label)}</strong><span>${claude ? "订阅额度剩余" : window.applies ? "用于当前模型" : "其他额度窗口"}</span></div><strong class="quota-amount">${esc(amount)}</strong><p>预计重置：${window.resets_at == null ? "未提供" : esc(source.date(window.resets_at))}</p>${window.names.length ? `<p class="view-note">${window.observed == null ? "" : `观测于 ${esc(source.date(window.observed))}<br>`}来源成员：${esc(window.names.join("、"))}${window.shared_from ? `（会话空闲，读数来自同账户的 ${esc(window.shared_from)}）` : ""}</p>` : ""}</div>`;
       }).join("") || '<p class="muted">原生客户端尚未提供额度窗口。</p>'}</div></section>`).join("");
-    const monitorBadge = item.monitor?.running === false ? badge("通知服务未运行", "blocked") : item.monitor?.running === true ? badge("通知服务运行中", "active") : "";
+    const monitorBadge = item.monitor?.running === false ? badge("通知服务未运行", "blocked") : item.monitor?.status === "unresponsive" ? badge("通知服务无响应", "blocked") : item.monitor?.status === "degraded" ? badge("通知服务部分降级", "pending") : item.monitor?.running === true ? badge("通知服务运行中", "active") : "";
     return `<div class="section-heading panel-intro"><div><h2>账户与额度</h2><p>登录由原生客户端管理。这里自动接收额度状态，无需模型主动上报。</p></div><div>${monitorBadge} ${badge(collector.enabled ? "自动采集已启用" : "自动采集未启用", collector.enabled ? "active" : "paused")}</div></div>
       <div class="quota-source-status">${Object.entries({ codex: "Codex", agy: "agy", claude: "Claude Code" }).map(([provider, label]) => { const value = collector[provider]; return `<p><strong>${label}</strong><span>${esc(value?.detail || "等待首次原生数据")}</span>${value?.checked_at ? `<small>检查于 ${esc(source.date(value.checked_at))}</small>` : ""}</p>`; }).join("")}</div>
       <p class="view-note">同一账户由多个窗口共享，数字不能相加。灰色“待刷新”表示当前余额未知；重置时间经过不会自动解除冷却。</p>
@@ -595,6 +624,7 @@
   });
   let detailTrigger = null;
   function openDetail(kind, id, trigger) {
+    cancelDetail();
     const item = team();
     if (!item && kind !== "about") return;
     let title = "", label = "", body = "";
@@ -608,6 +638,11 @@
       if (!flow) return;
       title = `${flow.from} → ${flow.to}`; label = "任务流";
       body = `<p class="detail-lead">${flow.kind === "request" ? "发起成员 → 执行成员" : "执行成员 → 独立评审"} · ${flow.tasks.length} 项任务</p><p class="detail-note">这是当前记录的任务分工；连线本身不证明任务已开始、送达或完成。</p><section>${flow.tasks.map((task) => `<p>${detailButton("task", task.id, task.title)}</p>${taskStatus(task)}`).join("")}</section>`;
+    } else if (kind === "msgflow") {
+      const flow = workflow.messageFlows(item).find((entry) => entry.id === id);
+      if (!flow) return;
+      title = `${flow.from} → ${flow.to}`; label = "消息往来";
+      body = `<p class="detail-lead">${esc(workflow.messageLabels[flow.messageKind] || flow.messageKind)} · ${flow.messages.length} 条，${esc(flow.to)} 已读取 ${flow.received} 条</p><p class="detail-note">连线表示已记录的消息投递；已读取只代表收到了内容，不代表同意建议或完成任务。</p><section>${[...flow.messages].reverse().map((message) => `<p>${detailButton("event", message.id, `消息 #${message.seq} · ${source.date(message.at)}`)}</p>`).join("")}</section>`;
     } else if (kind === "member") {
       const member = item.members.find((entry) => entry.id === id);
       if (!member) return;
@@ -619,10 +654,35 @@
       title = decision.title; label = "共同决定";
       body = `${badge(decisionStates[decision.state] || decision.state, decision.state)}<p class="detail-lead">${esc(decision.summary)}</p>${decision.author ? `<p class="view-note">提议成员：${esc(decision.author)}</p>` : ""}<section><h3>${source.live ? "提议内容" : "为什么提出"}</h3><p>${esc(decision.reason)}</p></section>${decision.authority ? `<section><h3>记录的用户指示</h3><p>${esc(decision.authority)}</p></section>` : ""}${decision.options.length ? `<section><h3>讨论中的选择</h3>${list(decision.options)}</section>` : ""}<section><h3>当前回应</h3><p>${esc(decision.responses)}</p></section><p class="detail-note">${source.live ? "页面只展示已记录的提议和回应。查看不会提交决定，也不代表成员同意。" : "这是只读示例。此处没有提交决定；真实操作应保留明确的用户意图和成员回应。"}</p>`;
     } else if (kind === "event") {
-      const event = item.activity.find((entry) => entry.id === id);
-      if (!event) return;
-      title = event.title; label = "共享动态";
+      const event = item.activity.find((entry) => entry.id === id) || item.activityExtra?.[id];
+      const seq = event ? null : item.workflow?.messages?.find((message) => message.id === id)?.seq;
+      if (!event && source.live && seq && !item.activityMissing?.[id]) {
+        // Older messages linked from the chart may sit beyond the loaded activity page.
+        const version = detailVersion;
+        detailController = new AbortController();
+        void source.message(item, seq, detailController.signal).then((found) => {
+          // A closed dialog, another detail, navigation or a newer read wins.
+          const current = team();
+          if (version !== detailVersion || current?.id !== item.id) return;
+          if (found && current !== item) (current.activityExtra ||= {})[found.id] = found;
+          if (!found) (current.activityMissing ||= {})[id] = true;
+          openDetail(kind, id, trigger);
+        }).catch((error) => {
+          if (version !== detailVersion || team()?.id !== item.id || error.name === "AbortError") return;
+          state.error = error.message;
+          renderStatus();
+        });
+        return;
+      }
+      if (!event && !seq) return;
+      label = "共享动态";
+      if (!event) {
+        title = `消息 #${seq}`;
+        body = '<p class="detail-lead">这条消息不在当前可读取的记录中。</p><p class="detail-note">请刷新记录后再试；工作台只读，不会补写缺失的内容。</p>';
+      } else {
+      title = event.title;
       body = `<p class="detail-lead">${esc(event.author)} · ${esc(event.time)}</p><section><p>${esc(event.body)}</p></section><div class="receipt-box"><strong>${esc(event.receipt)}</strong>${deliveryDetails(event)}<p>读取只代表收到了内容，不代表同意建议或完成任务。</p></div>${event.target ? detailButton(event.targetType, event.target, "查看相关记录", "outline-button") : ""}`;
+      }
     } else if (kind === "memory") {
       title = item.memory.title; label = "团队检查点";
       body = `<p class="detail-lead">${esc(item.memory.summary)}</p><section><h3>下一步</h3><p>${esc(item.memory.next)}</p></section><section><h3>保留的约束</h3>${list(item.memory.constraints)}</section>`;
@@ -719,6 +779,7 @@
   document.addEventListener("focusout", () => queueMicrotask(renderStatus));
   $("#close-detail").addEventListener("click", () => $("#detail-dialog").close());
   $("#detail-dialog").addEventListener("close", () => {
+    cancelDetail();
     if (detailTrigger?.isConnected) detailTrigger.focus({ preventScroll: true });
     renderStatus();
   });
@@ -765,7 +826,7 @@
       if (state.tab === "workflow" && !$("#detail-dialog").open) renderPanel();
     }, 150);
   });
-  window.addEventListener("pagehide", () => { clearTimeout(refreshTimer); controller?.abort(); pageController?.abort(); });
+  window.addEventListener("pagehide", () => { clearTimeout(refreshTimer); controller?.abort(); pageController?.abort(); detailController?.abort(); });
   setTheme(preference("theme") === "dark" ? "dark" : "light");
   void refreshRecords();
 })();

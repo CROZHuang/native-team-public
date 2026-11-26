@@ -178,6 +178,83 @@ class WorkbenchReadTests(WorkbenchFixture):
         self.assertTrue(result["truncated"])
         self.assertEqual(self.dump(), before)
 
+    def test_workflow_message_flows_use_team_deliveries_and_metadata_only(self):
+        team = self.team["id"]
+        direct = self.peers.message(
+            self.members["agy1"], team, "direct", "Private <b>body</b>", "wf-direct", ["code2"]
+        )
+        handoff = self.peers.message(
+            self.members["code2"], team, "handoff", "Handoff body", "wf-handoff", ["agy1", "agy2"]
+        )
+        blocker = self.peers.message(self.members["agy2"], team, "blocker", "Blocker body", "wf-blocker")
+        self.peers.message(self.members["agy1"], team, "milestone", "Milestone body", "wf-milestone")
+        self.sync("code2")
+        before = self.dump()
+        workflow = team_detail(self.store.state, team)["workflow"]
+        self.assertEqual(self.dump(), before)
+        by_seq = {m["seq"]: m for m in workflow["messages"]}
+        self.assertEqual(set(by_seq), {direct["seq"], handoff["seq"], blocker["seq"]})
+        self.assertNotIn("milestone", {m["kind"] for m in workflow["messages"]})
+        self.assertEqual(by_seq[direct["seq"]]["recipients"], [{"alias": "code2", "received": True}])
+        self.assertEqual(
+            by_seq[handoff["seq"]]["recipients"],
+            [{"alias": "agy1", "received": False}, {"alias": "agy2", "received": False}],
+        )
+        self.assertTrue(by_seq[direct["seq"]]["edge"] and by_seq[handoff["seq"]]["edge"])
+        self.assertFalse(by_seq[blocker["seq"]]["edge"])
+        events = {e["seq"]: e for e in workflow["events"] if e["target_type"] == "message"}
+        self.assertEqual(set(events), set(by_seq))
+        self.assertEqual(events[direct["seq"]]["state"], "received")
+        self.assertEqual(events[handoff["seq"]]["state"], "sent")
+        self.assertEqual(events[direct["seq"]]["actor"], "agy1")
+        for record in [*workflow["messages"], *events.values()]:
+            self.assertNotIn("body", record)
+        self.assertNotIn("Private", json.dumps(workflow))
+        self.assertEqual(workflow["limits"]["messages"], 100)
+
+    def test_workflow_messages_are_bounded_and_older_ones_resolve_by_cursor(self):
+        team = self.team["id"]
+        sent = [
+            self.peers.message(
+                self.members["agy1"], team, "direct", f"Note {i}", f"bulk-{i}", ["code2"]
+            )
+            for i in range(130)
+        ]
+        detail = team_detail(self.store.state, team)
+        workflow = detail["workflow"]
+        self.assertEqual(len(workflow["messages"]), 100)
+        self.assertTrue(workflow["truncated"])
+        self.assertEqual(
+            [m["seq"] for m in workflow["messages"]], [m["seq"] for m in sent[-100:]]
+        )
+        oldest = workflow["messages"][0]
+        self.assertNotIn(oldest["id"], {row["id"] for row in detail["activity"]["items"]})
+        page = record_page(self.store.state, team, "activity", json.dumps(oldest["seq"] + 1))
+        self.assertEqual(page["items"][0]["id"], oldest["id"])
+        self.assertEqual(page["items"][0]["body"], "Note 30")
+
+    def test_monitor_summary_reports_unresponsive_and_degraded_from_heartbeat(self):
+        import time
+        from native_team import monitor
+
+        beat = self.store.state / monitor.HEARTBEAT
+
+        def write(updated, backoff):
+            beat.write_text(json.dumps({"version": 1, "instance": "0" * 32, "started_at": updated, "updated": updated, "backoff": backoff, "scan_retries": 0}))
+
+        entry = {"member": "m", "restarts": 1, "due_in": 5, "error": "OperationalError"}
+        # Real cross-process lock probing is covered in test_monitor; here the companion is held.
+        with patch.object(monitor, "running", return_value=True), patch.object(monitor, "instance_held", return_value=True):
+            detail = team_detail(self.store.state, self.team["id"])["monitor"]
+            self.assertEqual((detail["running"], detail["status"]), (True, "running"))
+            write(time.time() - 300, [])
+            detail = team_detail(self.store.state, self.team["id"])["monitor"]
+            self.assertEqual((detail["running"], detail["status"]), (True, "unresponsive"))
+            write(time.time(), [entry])
+            listing = directory(self.store.state)["monitor"]
+            self.assertEqual((listing["status"], listing["backoff"]), ("degraded", 1))
+        self.assertEqual(team_detail(self.store.state, self.team["id"])["monitor"]["status"], "stopped")
+
     def test_closed_history_omits_current_availability_and_live_wait_ages(self):
         Availability(self.store).set(
             self.closed_member, 0, "cooldown", "Unrelated current quota"
