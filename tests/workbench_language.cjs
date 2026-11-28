@@ -42,12 +42,13 @@ test("switch workbench language and preserve original records and route", async 
     page.on("pageerror", error => errors.push(error.message));
     await page.goto("http://127.0.0.1:31234/");
     await page.getByRole("tab", { name: "任务与评审" }).click();
-    const picker = page.getByRole("combobox", { name: "界面语言" });
-    await picker.focus();
-    await picker.press("ArrowDown");
+    const english = page.getByRole("group", { name: "界面语言" }).getByRole("button", { name: "English" });
+    await english.focus();
+    await english.press("Enter");
     await page.getByRole("tab", { name: "Tasks & reviews" }).waitFor();
     assert.equal(new URL(page.url()).hash, "#test/tasks");
     assert.equal(await page.locator("html").getAttribute("lang"), "en");
+    assert.equal(await page.getByRole("button", { name: "English" }).getAttribute("aria-pressed"), "true");
     await page.locator(".task-row").getByText("In review", { exact: true }).waitFor();
     assert.equal(await page.locator(".task-row strong").textContent(), "待评审");
     await page.reload();
@@ -73,7 +74,7 @@ test("switch workbench language and preserve original records and route", async 
     scenario = "error";
     await page.reload();
     await page.getByRole("button", { name: "Retry", exact: true }).waitFor();
-    await page.getByRole("combobox", { name: "Interface language" }).selectOption("zh-CN");
+    await page.getByRole("group", { name: "Interface language" }).getByRole("button", { name: "中文" }).click();
     await page.getByRole("button", { name: "重新读取" }).waitFor();
     assert.equal(await page.locator("html").getAttribute("lang"), "zh-CN");
     assert.deepEqual(errors, []);

@@ -43,10 +43,10 @@
       <header class="workspace-toolbar">
         <div class="breadcrumb">团队工作区 <span>/</span> <span id="breadcrumb-name"></span></div>
         <div class="toolbar-actions">
-          <select id="ui-language" aria-label="界面语言">
-            <option value="zh-CN" lang="zh-CN">中文</option>
-            <option value="en" lang="en">English</option>
-          </select>
+          <div id="ui-language" role="group" aria-label="界面语言">
+            <button type="button" lang="zh-CN" aria-pressed="true">中文</button>
+            <button type="button" lang="en" aria-pressed="false">English</button>
+          </div>
           <button id="theme-button" class="quiet-button" type="button" aria-pressed="false">深色外观</button>
           <button id="about-button" class="quiet-button" type="button">关于工作台</button>
         </div>

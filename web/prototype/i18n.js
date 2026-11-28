@@ -505,9 +505,11 @@
     }
   }
   const picker = document.querySelector("#ui-language");
-  picker.value = locale;
-  picker.addEventListener("change", () => {
-    const next = picker.value;
+  for (const button of picker.querySelectorAll("button")) {
+    button.setAttribute("aria-pressed", String(button.lang === locale));
+  }
+  picker.addEventListener("click", event => {
+    const next = event.target.closest("button")?.lang;
     if (!supported(next) || next === locale) return;
     try {
       if (isLoopback) document.cookie = cookie + "=" + next + "; Path=/; Max-Age=31536000; SameSite=Strict";
