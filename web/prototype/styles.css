@@ -368,6 +368,10 @@ button:disabled { opacity: .65; }
 #ui-language button { min-height: 28px; padding: 2px 9px; border: 0; border-radius: 3px; background: transparent; color: var(--muted); font: inherit; font-size: .875rem; }
 #ui-language button:hover { background: var(--hover); }
 #ui-language button[aria-pressed="true"] { color: var(--blue); background: var(--blue-soft); font-weight: 650; }
+#local-quota { margin-block: 1.5rem 2.5rem; }
+#local-quota .quota-account-card ul { padding-inline-start: 1.2rem; }
+#local-quota .quota-account-card li { margin-block: .65rem; overflow-wrap: anywhere; }
+#local-quota .quota-account-card small { display: block; color: var(--muted); }
 .refresh-controls { flex: 0 0 auto; justify-content: flex-end; max-width: 100%; }
 #refresh-interval-label { display: flex; align-items: center; gap: 8px; white-space: nowrap; }
 .refresh-hint { font-size: .75rem; color: var(--muted); }

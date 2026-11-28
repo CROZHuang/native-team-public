@@ -25,14 +25,14 @@
     return demoPromise;
   }
 
-  async function json(path, signal) {
+  async function json(path, signal, headers = {}, timeout = 8000) {
     const controller = new AbortController();
     const cancel = () => controller.abort();
     if (signal?.aborted) cancel();
     signal?.addEventListener("abort", cancel, { once: true });
-    const timer = setTimeout(cancel, 8000);
+    const timer = setTimeout(cancel, timeout);
     try {
-      const response = await fetch(path, { cache: "no-store", credentials: "omit", signal: controller.signal });
+      const response = await fetch(path, { cache: "no-store", credentials: "omit", signal: controller.signal, headers });
       const result = await response.json();
       if (!response.ok) throw new Error(t(result.error || "无法读取本机团队记录。"));
       return result;
@@ -126,6 +126,9 @@
 
   window.nativeTeamSource = {
     live, date, collectorDetail,
+    localQuota(refresh, signal) {
+      return json("/api/quota", signal, { "X-Native-Team-Quota": refresh ? "refresh" : "read" }, 15000);
+    },
     get directoryReadAt() { return directoryReadAt; },
     async directory(signal) {
       if (!live) return (await demoData()).map((item) => ({ ...item, loaded: true }));

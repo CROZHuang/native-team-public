@@ -1,9 +1,10 @@
 "use strict";
 
 (() => {
-  const { t } = window.nativeTeamI18n;
+  const { t, locale } = window.nativeTeamI18n;
   const source = window.nativeTeamSource;
   let teams = [];
+  const localQuota = { data: null, loading: false, error: "", started: false };
   const tabs = ["overview", "tasks", "activity", "workflow", "quota", "memory"];
   const teamStates = { active: t("协作中"), paused: t("已暂停"), done: t("已完成"), cancelled: t("已取消") };
   const taskStates = { ready: t("待开始"), working: t("进行中"), review: t("待评审"), accepted: t("已验收"), blocked: t("受阻"), cancelled: t("已取消") };
@@ -95,6 +96,7 @@
 
   async function refreshRecords(refreshDirectory = true, background = false) {
     if (state.loading || (background && refreshPause())) return;
+    if (source.live && state.tab === "quota") void refreshLocalQuota();
     cancelPagination();
     if (!background) cancelDetail();
     const version = ++requestVersion;
@@ -201,6 +203,7 @@
 
   function navigate(teamId, tab, updateHistory = true) {
     const teamChanged = state.teamId !== teamId;
+    const reopenQuota = tab === "quota" && state.tab !== tab && localQuota.started && source.live;
     if ($("#detail-dialog").open) $("#detail-dialog").close();
     if (state.teamId !== teamId || state.tab !== tab) { cancelPagination(); cancelDetail(); }
     if (state.teamId !== teamId) {
@@ -219,6 +222,7 @@
     if (updateHistory && location.hash !== route) history.pushState(null, "", route);
     handledRoute = location.hash;
     render();
+    if (reopenQuota) void refreshLocalQuota();
     if (state.teamId && (!team()?.loaded || (teamChanged && source.live))) void refreshRecords(false);
   }
 
@@ -466,6 +470,51 @@
       <section class="memory-sources"><h3>${t("成果与依据")}</h3>${source.live ? (memory.taskIds.length ? `<div class="memory-evidence-links">${memory.taskIds.map((id) => detailButton("task", id, item.tasks.find((task) => task.id === id).title, "outline-button")).join("")}</div>` : `<p class="muted">${t("已加载记录中尚无已验收任务。")}</p>`) : list(memory.evidence, "memory-list")}<p class="view-note">${source.live ? t("来源为已有共享工作板、决定和任务证据；未生成 AI 总结。更早的任务可在“任务与评审”中继续加载。") : t("当前均为示例条目。真实接入后，这里应指向可检查的共享成果。")}</p></section>`;
   }
 
+  function quotaWindow(provider, window) {
+    const label = provider === "claude" ? ({ five_hour: t("5 小时"), seven_day: t("7 天") }[window.bucket] || window.bucket) : window.bucket;
+    const value = window.disabled ? t("未启用") : Number.isFinite(window.remaining)
+      ? new Intl.NumberFormat(locale, { style: "percent", maximumFractionDigits: 1 }).format(window.remaining / 100)
+      : Number.isFinite(window.amount) ? t("{0}（单位未提供）", window.amount) : t("未提供余额");
+    return `<li><strong>${esc(label)}</strong> · ${esc(value)}${window.stale ? ` · ${t("历史读数")}` : ""}
+      ${window.applies ? `<span class="view-note">${t("用于当前模型")}</span>` : ""}
+      ${Number.isFinite(window.observed_at) ? `<small>${t("观测于 {0}", esc(source.date(window.observed_at)))}</small>` : ""}
+      ${Number.isFinite(window.resets_at) ? `<small>${t("预计重置：{0}", esc(source.date(window.resets_at)))}</small>` : ""}</li>`;
+  }
+
+  function updateLocalQuota() {
+    const section = $("#local-quota");
+    if (!section) return;
+    const button = section.querySelector("button");
+    button.disabled = localQuota.loading;
+    button.textContent = localQuota.loading ? t("正在读取…") : t("刷新额度");
+    const status = section.querySelector("[role=status]");
+    status.textContent = localQuota.error || (localQuota.data ? t("读取于 {0}", source.date(localQuota.data.read_at)) : "");
+    const providers = localQuota.data?.providers || {};
+    section.querySelector(".quota-account-grid").innerHTML = Object.entries({ codex: "Codex CLI", agy: "agy", claude: "Claude Code" }).map(([key, name]) => {
+      const entry = providers[key];
+      const note = entry?.status === "unavailable" ? t("暂时无法获取新读数。") : key === "codex" ? t("原生账户查询") : t("最近一次原生状态栏读数");
+      const windows = entry?.windows || [];
+      return `<section class="quota-account-card"><h3>${name}</h3><p class="view-note">${note}${entry?.model ? " · " + esc(entry.model) : ""}</p>
+        ${windows.length ? `<ul>${windows.map(w => quotaWindow(key, w)).join("")}</ul>` : `<p>${t("尚无可用读数")}</p>`}</section>`;
+    }).join("");
+  }
+
+  async function refreshLocalQuota() {
+    if (localQuota.loading) return;
+    localQuota.started = true;
+    localQuota.loading = true;
+    localQuota.error = "";
+    updateLocalQuota();
+    try {
+      localQuota.data = await source.localQuota(true);
+    } catch (error) {
+      localQuota.error = error.message || t("暂时无法获取新读数。");
+    } finally {
+      localQuota.loading = false;
+      updateLocalQuota();
+    }
+  }
+
   function renderQuota(item) {
     if (closed(item)) return emptyContent(t("历史团队保留协作记录"), t("当前账号额度不属于这个团队的历史状态，因此不在这里显示。"));
     const collector = item.quota_collector || {};
@@ -556,7 +605,9 @@
       $(`#panel-${tab}`).hidden = !active;
     });
     const panel = $(`#panel-${state.tab}`);
-    if (!item?.loaded) {
+    if (state.tab === "quota" && source.live && !item?.loaded) {
+      panel.innerHTML = "";
+    } else if (!item?.loaded) {
       panel.innerHTML = state.error
         ? emptyContent(t("暂时无法读取团队记录"), state.error) + `<div class="empty-action"><button type="button" class="outline-button" data-refresh>${t("重新读取")}</button></div>`
         : state.loading ? emptyContent(t("正在读取本机记录…"), t("读取不会唤醒成员或确认消息。"))
@@ -575,6 +626,13 @@
           : ({ overview: renderOverview, tasks: renderTasks, activity: renderActivity, memory: renderMemory, quota: renderQuota })[state.tab](item);
       }
       panel.dataset.teamId = item.id;
+    }
+    if (state.tab === "quota" && source.live) {
+      panel.insertAdjacentHTML("afterbegin", `<section id="local-quota"><div class="section-heading"><div><h2>${t("本机客户端额度")}</h2>
+        <p>${t("Codex 查询当前账户。agy 和 Claude Code 显示最近上报的状态栏读数。")}</p></div>
+        <button type="button" class="outline-button" data-refresh-quota>${t("刷新额度")}</button></div><p class="view-note" role="status"></p><div class="quota-account-grid"></div></section>`);
+      updateLocalQuota();
+      if (!localQuota.started) void refreshLocalQuota();
     }
   }
 
@@ -733,6 +791,7 @@
     if (button.dataset.detail) openDetail(button.dataset.detail, button.dataset.id, button);
     if (button.dataset.loadMore) void loadMore(button.dataset.loadMore);
     if (button.hasAttribute("data-refresh")) void refreshRecords();
+    if (button.hasAttribute("data-refresh-quota")) void refreshLocalQuota();
     if (button.hasAttribute("data-retry")) {
       state.scenario = "normal";
       $("#scenario").value = "normal";

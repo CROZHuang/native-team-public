@@ -21,7 +21,7 @@ def atomic_json(path, value):
     path = Path(path)
     fd, name = tempfile.mkstemp(prefix=".quota-", dir=path.parent)
     try:
-        with os.fdopen(fd, "w") as output:
+        with os.fdopen(fd, "w", encoding="utf-8") as output:
             json.dump(value, output, ensure_ascii=False, allow_nan=False)
         os.replace(name, path)
     finally:

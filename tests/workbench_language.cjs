@@ -24,6 +24,7 @@ test("switch workbench language and preserve original records and route", async 
     const context = await browser.newContext();
     const errors = [];
     let scenario = "team";
+    let quotaReads = 0;
     await context.route("**/*", async route => {
       const { hostname, pathname } = new URL(route.request().url());
       assert.equal(hostname, "127.0.0.1");
@@ -33,6 +34,14 @@ test("switch workbench language and preserve original records and route", async 
         return route.fulfill({ json: { teams: scenario === "empty" ? [] : [team], read_at: team.read_at } });
       }
       if (pathname === "/api/teams/test") return route.fulfill({ json: team });
+      if (pathname === "/api/quota") {
+        assert.equal(route.request().headers()["x-native-team-quota"], "refresh");
+        quotaReads++;
+        return route.fulfill({ json: { read_at: team.read_at, providers: {
+          codex: { status: "ok", windows: [{ bucket: "codex/primary", remaining: 100 - quotaReads, observed_at: team.read_at }] },
+          agy: { status: "ok", model: "gemini", windows: [{ bucket: "gemini-weekly", remaining: 0, stale: true, applies: true }] }
+        } } });
+      }
       const file = pathname === "/" ? "index.html" : pathname.slice(1);
       if (!Object.hasOwn(files, file)) return route.fulfill({ status: 404, body: "" });
       return route.fulfill({ body: await readFile(path.join(assets, file)), contentType: files[file] + "; charset=utf-8" });
@@ -59,6 +68,10 @@ test("switch workbench language and preserve original records and route", async 
     }
     await page.getByRole("tab", { name: "Accounts & quota" }).click();
     await page.getByText("Registered sessions: 2. Sessions with status-line readings: 1. Snapshots that failed validation: 1.").waitFor();
+    await page.locator("#local-quota").getByText(/gemini-weekly.*0%.*Last known reading/).waitFor();
+    const priorReads = quotaReads;
+    await page.getByRole("button", { name: "Refresh quotas" }).click();
+    await page.locator("#local-quota").getByText(new RegExp("codex/primary.*" + (99 - priorReads) + "%")).waitFor();
     await page.getByRole("tab", { name: "Activity" }).click();
     await page.getByRole("button", { name: "待评审 {0}", exact: true }).click();
     await page.getByRole("dialog").getByRole("heading", { name: "待评审 {0}" }).waitFor();
@@ -68,6 +81,10 @@ test("switch workbench language and preserve original records and route", async 
     scenario = "empty";
     await page.goto("http://127.0.0.1:31235/");
     await page.getByRole("heading", { name: "No teams registered yet" }).waitFor();
+    await page.getByRole("tab", { name: "Accounts & quota" }).click();
+    await page.getByRole("heading", { name: "Local client quotas" }).waitFor();
+    await page.locator("#local-quota").getByText("gemini-weekly").waitFor();
+    await page.getByRole("tab", { name: "Overview" }).click();
     await page.getByRole("button", { name: "About", exact: true }).click();
     await page.getByRole("dialog").getByRole("heading", { name: "About the workbench" }).waitFor();
     await page.keyboard.press("Escape");

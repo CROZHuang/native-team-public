@@ -91,6 +91,9 @@ def main():
         "--state", type=Path, default=Path.home() / ".local/state/native-team"
     )
     commands = parser.add_subparsers(dest="command", required=True)
+    stream = commands.add_parser("workbench-quota-stream", help="Collect local quota-only status-line readings for the workbench")
+    stream.add_argument("provider", choices=("agy", "claude"))
+    stream.add_argument("renderer", nargs=argparse.REMAINDER, help="Optional existing renderer command and arguments")
     commands.add_parser(
         "claude-quota-stream",
         help="Pass native status-line input to its configured renderer",
@@ -205,6 +208,13 @@ def main():
                     build(args.project, args.paths, args.base), ensure_ascii=False
                 )
             )
+        elif args.command == "workbench-quota-stream":
+            from .workbench_quota import statusline_stream
+
+            renderer = args.renderer
+            if renderer[:1] == ["--"]:
+                renderer = renderer[1:]
+            raise SystemExit(statusline_stream(sys.stdin.buffer, args.state, args.provider, renderer))
         elif args.command == "claude-quota-stream":
             from .claude_quota import forward_statusline
 

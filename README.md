@@ -28,6 +28,33 @@ The workbench starts in Chinese and remembers your choice in the browser, includ
 when the local server starts on a new port. Switching reloads the current team and
 tab. Reports, task titles and messages stay in the language their authors used.
 
+### Refresh local quotas
+
+Open **Accounts & quota → Refresh quotas**. Local client quotas are available before
+you create a team. The workbench asks the signed-in Codex CLI for its account limits
+over stdio. It makes no model call. Requests within 15 seconds share the last result.
+
+For agy and Claude Code, the source is the latest native status-line callback. In
+the client's status-line settings, use `native-team workbench-quota-stream agy --`
+or `native-team workbench-quota-stream claude --` followed by the executable and
+arguments for your existing renderer. For example:
+
+```text
+native-team workbench-quota-stream agy -- node "/absolute/path/to/statusline.js"
+```
+
+The renderer receives its original input. With no renderer, the command only records
+the observation. Specify `native-team --state <directory> workbench-quota-stream …`
+when the workbench uses a custom state directory. Removing the wrapper from the
+client settings stops future observations.
+
+Each card shows the source and observation time of its windows. Refreshing reads the
+newest available callback. Repainting an unchanged value preserves its original
+timestamp. Readings older than five minutes or past their reported reset are marked
+as historical. In agy, `/usage` requests a fresh provider reading. Claude Code supplies
+usage windows when available. These local cards work independently of the team's
+notification monitor and quota recovery. They do not change the team's availability.
+
 ## Connect conversations
 
 Configure each participating client's native MCP settings to launch the installed `native-team` executable over stdio. Use the full executable path if the client starts outside the activated environment. Give each client its matching arguments.

@@ -26,6 +26,20 @@ TARGETS = f"""SELECT m.id,m.native_id FROM members m
 MAX_INPUT = 131072
 
 
+def status_windows(payload):
+    raw = payload.get("rate_limits")
+    raw = raw if isinstance(raw, dict) else {}
+    for bucket in WINDOWS:
+        value = raw.get(bucket)
+        used = value.get("used_percentage") if isinstance(value, dict) else None
+        reset = value.get("resets_at") if isinstance(value, dict) else None
+        yield {
+            "bucket": bucket,
+            "remaining": 100 - used if finite(used) and 0 <= used <= 100 else None,
+            "resets_at": timestamp(reset) if finite(reset) else None,
+        }
+
+
 def capture(payload, state, *, now=None):
     """Match the callback UUID before storing anything. A repaint is not a fresh quota reading."""
     stamp = time.time() if now is None else now
@@ -69,8 +83,6 @@ def capture(payload, state, *, now=None):
             old = {}
         if stamp < old.get("received_at", 0):
             return
-        raw = payload.get("rate_limits")
-        raw = raw if isinstance(raw, dict) else {}
         model = payload.get("model")
         model_id = text(model.get("id")) if isinstance(model, dict) else ""
         history = old.get("last_windows")
@@ -80,13 +92,12 @@ def capture(payload, state, *, now=None):
             if isinstance(history, dict) and isinstance(history.get(k), dict)
         }
         windows = []
-        for bucket in WINDOWS:
-            value = raw.get(bucket)
-            used = value.get("used_percentage") if isinstance(value, dict) else None
-            reset = value.get("resets_at") if isinstance(value, dict) else None
-            remaining = 100 - used if finite(used) and 0 <= used <= 100 else None
-            reset = timestamp(reset) if finite(reset) else None
-            window = {"bucket": bucket, "remaining": remaining, "resets_at": reset}
+        for window in status_windows(payload):
+            bucket, remaining, reset = (
+                window["bucket"],
+                window["remaining"],
+                window["resets_at"],
+            )
             if remaining is not None or reset is not None:
                 prior = last.get(bucket, {})
                 same = (remaining, reset) == (

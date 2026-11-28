@@ -12,6 +12,7 @@ import webbrowser
 
 from .store import TeamError
 from .workbench_data import SchemaError, directory, team_detail, record_page
+from .workbench_quota import WorkbenchQuota
 
 try:
     ASSETS = files("native_team.web_assets")
@@ -70,6 +71,7 @@ class WorkbenchServer(ThreadingMixIn, HTTPServer):
 
 def make_server(state, port=0):
     state = Path(state).expanduser().resolve()
+    quota = WorkbenchQuota(state)
 
     class Handler(BaseHTTPRequestHandler):
         server_version = "NativeTeamWorkbench"
@@ -126,6 +128,12 @@ def make_server(state, port=0):
                     self.respond(200, (ASSETS / filename).read_bytes(), kind)
                 elif target.path == "/api/teams" and not target.query:
                     self.respond(200, directory(state))
+                elif target.path == "/api/quota" and not target.query:
+                    mode = self.headers.get("X-Native-Team-Quota")
+                    if mode not in ("read", "refresh"):
+                        self.respond(403, {"error": "此工作台仅允许本机页面读取。"})
+                        return
+                    self.respond(200, quota.read(refresh=mode == "refresh"))
                 else:
                     match = re.fullmatch(
                         r"/api/teams/([a-zA-Z0-9-]{1,100})(?:/(tasks|activity|decisions))?",

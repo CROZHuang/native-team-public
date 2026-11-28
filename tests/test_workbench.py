@@ -554,6 +554,18 @@ class WorkbenchHTTPTests(WorkbenchFixture):
         )
         self.assertEqual(self.dump(), before)
 
+    def test_local_quota_reads_require_workbench_header_and_preserve_ledger(self):
+        before = self.dump()
+        self.assertEqual(self.request("/api/quota")[0], 403)
+        self.assertEqual(self.request("/api/quota", headers={
+            "X-Native-Team-Quota": "read", "Sec-Fetch-Site": "cross-site"
+        })[0], 403)
+        status, headers, body = self.request("/api/quota", headers={"X-Native-Team-Quota": "read"})
+        self.assertEqual(status, 200)
+        self.assertEqual(headers["Cache-Control"], "no-store")
+        self.assertEqual(json.loads(body)["providers"]["codex"], {"status": "idle", "windows": []})
+        self.assertEqual(self.dump(), before)
+
     def test_monitor_status_reports_stopped_with_pending_codex_deliveries(self):
         status, _, body = self.request("/api/teams")
         self.assertEqual(status, 200)
