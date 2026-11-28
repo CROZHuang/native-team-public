@@ -76,3 +76,10 @@ jobs:
           RUNNER_ARCH_EXPECTED: ${{ matrix.arch }}
         shell: bash
         run: python scripts/check_release.py dist --sha256 "$WHEEL_SHA256" --arch "$RUNNER_ARCH_EXPECTED"
+      - name: Test the workbench language switch in Chromium
+        shell: bash
+        run: |
+          npm install --no-save --package-lock=false --ignore-scripts playwright@1.62.1
+          npx --no-install playwright install --with-deps chromium
+          python -m zipfile -e dist/*.whl "$RUNNER_TEMP/workbench-wheel"
+          WORKBENCH_ASSETS="$RUNNER_TEMP/workbench-wheel/native_team/web_assets" node --test tests/workbench_language.cjs

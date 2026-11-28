@@ -23,6 +23,11 @@ native-team ui
 
 On a new installation the team directory is empty. The last command opens the read-only workbench on the loopback address printed in the terminal. To open the page yourself, use `native-team ui --no-open`. Closing its terminal stops the server. The ledger remains on disk.
 
+Choose **中文** or **English** in the workbench toolbar on Windows, Linux or macOS.
+The workbench starts in Chinese and remembers your choice in the browser, including
+when the local server starts on a new port. Switching reloads the current team and
+tab. Reports, task titles and messages stay in the language their authors used.
+
 ## Connect conversations
 
 Configure each participating client's native MCP settings to launch the installed `native-team` executable over stdio. Use the full executable path if the client starts outside the activated environment. Give each client its matching arguments.

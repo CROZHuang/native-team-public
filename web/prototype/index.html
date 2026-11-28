@@ -10,6 +10,7 @@
   <link rel="icon" href="./mark.svg" type="image/svg+xml">
   <link rel="stylesheet" href="./styles.css">
   <script src="./config.js" defer></script>
+  <script src="./i18n.js" defer></script>
   <script src="./data-source.js" defer></script>
   <script src="./workflow.js" defer></script>
   <script src="./app.js" defer></script>
@@ -39,7 +40,17 @@
       <div class="sidebar-footer"><span class="local-icon" aria-hidden="true">⌘</span><div><strong id="sidebar-mode">本地只读工作台</strong><span>浏览不会唤醒任何 session</span></div></div>
     </aside>
     <main id="workspace" tabindex="-1">
-      <header class="workspace-toolbar"><div class="breadcrumb">团队工作区 <span>/</span> <span id="breadcrumb-name"></span></div><div class="toolbar-actions"><button id="theme-button" class="quiet-button" type="button" aria-pressed="false">深色外观</button><button id="about-button" class="quiet-button" type="button">关于工作台</button></div></header>
+      <header class="workspace-toolbar">
+        <div class="breadcrumb">团队工作区 <span>/</span> <span id="breadcrumb-name"></span></div>
+        <div class="toolbar-actions">
+          <select id="ui-language" aria-label="界面语言">
+            <option value="zh-CN" lang="zh-CN">中文</option>
+            <option value="en" lang="en">English</option>
+          </select>
+          <button id="theme-button" class="quiet-button" type="button" aria-pressed="false">深色外观</button>
+          <button id="about-button" class="quiet-button" type="button">关于工作台</button>
+        </div>
+      </header>
       <div class="workspace-body">
         <section id="team-header" class="team-header" aria-labelledby="team-title"></section>
         <div class="tab-bar" role="tablist" aria-label="团队视图">

@@ -363,6 +363,8 @@ button:disabled { opacity: .65; }
 
 /* Optional local display preferences; no model or ledger interaction. */
 .refresh-controls, .toolbar-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 16px; }
+.workspace-toolbar { flex-wrap: wrap; }
+#ui-language { width: auto; min-height: 32px; padding-inline: 8px; font: inherit; font-size: .875rem; }
 .refresh-controls { flex: 0 0 auto; justify-content: flex-end; max-width: 100%; }
 #refresh-interval-label { display: flex; align-items: center; gap: 8px; white-space: nowrap; }
 .refresh-hint { font-size: .75rem; color: var(--muted); }

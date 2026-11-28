@@ -23,4 +23,4 @@ native_team = "src/native_team"
 "native_team.web_assets" = "web/prototype"
 
 [tool.setuptools.package-data]
-"native_team.web_assets" = ["index.html", "data-source.js", "app.js", "workflow.js", "styles.css", "mark.svg"]
+"native_team.web_assets" = ["index.html", "i18n.js", "data-source.js", "app.js", "workflow.js", "styles.css", "mark.svg"]

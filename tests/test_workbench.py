@@ -517,6 +517,7 @@ class WorkbenchHTTPTests(WorkbenchFixture):
             ("styles.css", "text/css"),
             ("mark.svg", "image/svg+xml"),
             ("app.js", "text/javascript"),
+            ("i18n.js", "text/javascript"),
             ("data-source.js", "text/javascript"),
             ("workflow.js", "text/javascript"),
         ):
